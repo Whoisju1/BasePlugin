@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <MSBuildAllProjects Condition="'$(MSBuildVersion)' == '' Or '$(MSBuildVersion)' &lt; '16.0'">$(MSBuildAllProjects);$(MSBuildThisFileFullPath)</MSBuildAllProjects>
+    <HasSharedItems>true</HasSharedItems>
+    <SharedGUID>62d1c32f-e750-4a50-a42f-c80f2bc145db</SharedGUID>
+  </PropertyGroup>
+  <PropertyGroup Label="Configuration">
+    <Import_RootNamespace>SHI.CRM.Plugins.Base</Import_RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(MSBuildThisFileDirectory)BasePlugin.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Diagnostics\TracingExtensions.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Exceptions\PluginExceptionFactory.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Infrastructure\PluginServiceResolver.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Infrastructure\PluginServices.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Telemetry\EnvironmentVariableReader.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Telemetry\TelemetryAdapter.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Telemetry\TelemetryTracingService.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)Validation\ContextInputExtensions.cs" />
+    <!-- Ensure tracer included -->
+  </ItemGroup>
+</Project>

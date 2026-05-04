@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="BasePluginTests/BasePluginTests.csproj" Id="ffdf202d-6eb9-44ce-be24-3c531e0e5efd" />
+  <Project Path="SHI.CRM.Plugins.Base/SHI.CRM.Plugins.Base.shproj" />
+</Solution>
