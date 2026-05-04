@@ -1,6 +1,7 @@
 ﻿using System;
 using System.ServiceModel;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Query;
 using Moq;
 using Xunit;
 using BasePluginTests.Common;
@@ -222,6 +223,73 @@ namespace BasePluginTests
             Assert.Contains(prefix, ex.Message);
             Assert.Contains("Reference", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("unknown", ex.Message, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void Execute_reads_disable_trace_flag_from_dataverse_when_set()
+        {
+            // Configure the execution service to return "1" for the Dataverse env var so duplication is disabled.
+            _harness.ExecutionService
+                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns<QueryBase>(query =>
+                {
+                    var qe = query as QueryExpression;
+                    var schema = qe?.Criteria.Conditions[0].Values[0] as string;
+                    if (schema == "shi_DisableInnerTraceDuplication")
+                    {
+                        var entity = new Entity("environmentvariabledefinition")
+                        {
+                            ["v.value"] = new AliasedValue(
+                                "environmentvariablevalue",
+                                "value",
+                                "1"
+                            ),
+                        };
+                        return new EntityCollection(new[] { entity });
+                    }
+
+                    return new EntityCollection();
+                });
+
+            ITracingService capturedCloudTracing = null;
+            var plugin = new TestableChildPlugin(
+                (sp, services, cloudTrace) => capturedCloudTracing = cloudTrace
+            );
+
+            plugin.Execute(_harness.ServiceProvider.Object);
+
+            var telemetryTracer = Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(capturedCloudTracing);
+            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService)
+                .GetField("_duplicateInnerTrace", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var duplicateInnerTrace = (bool)field!.GetValue(telemetryTracer)!;
+            Assert.False(duplicateInnerTrace);
+
+            // The execution service should have been queried for the Dataverse env var.
+            _harness.ExecutionService.Verify(
+                s => s.RetrieveMultiple(It.Is<QueryExpression>(q =>
+                    q.EntityName == "environmentvariabledefinition"
+                    && (string)q.Criteria.Conditions[0].Values[0] == "shi_DisableInnerTraceDuplication"
+                )),
+                Times.AtLeastOnce
+            );
+        }
+
+        [Fact]
+        public void Execute_defaults_to_duplicating_inner_trace_when_dataverse_has_no_value()
+        {
+            // No setup on RetrieveMultiple => Moq returns null, EnvironmentVariableReader returns null.
+            ITracingService capturedCloudTracing = null;
+            var plugin = new TestableChildPlugin(
+                (sp, services, cloudTrace) => capturedCloudTracing = cloudTrace
+            );
+
+            plugin.Execute(_harness.ServiceProvider.Object);
+
+            var telemetryTracer = Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(capturedCloudTracing);
+            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService)
+                .GetField("_duplicateInnerTrace", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var duplicateInnerTrace = (bool)field!.GetValue(telemetryTracer)!;
+            Assert.True(duplicateInnerTrace);
         }
 
         private void AssertCommonPropsIncludeExpectedFields(ITracingService cloudTracing)

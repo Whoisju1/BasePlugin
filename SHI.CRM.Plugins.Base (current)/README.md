@@ -121,8 +121,20 @@ Service choice examples:
 - `cloudTracing` wraps `services.Tracing` and mirrors messages to Application Insights when an Application Insights connection string is present. If Application Insights is unavailable, it quietly no-ops.
 - Common telemetry properties include correlation IDs, message name, entity info, stage/depth, mode, initiating/executing user IDs, business unit/organization IDs and name, input/shared variable counts, and `PluginType`.
 - Runtime flags for `TraceDuplicationEnabled` and `TelemetryEnabled` are attached to every telemetry event.
-- Inner trace duplication can be disabled by setting environment variable `DISABLE_INNER_TRACE_DUPLICATION=1`; telemetry still flows when available.
-- Application Insights connection strings are read from `APPLICATIONINSIGHTS_CONNECTION_STRING` or `APPINSIGHTS_CONNECTION_STRING`.
+
+#### Telemetry configuration sources
+The base looks up telemetry configuration from Dataverse Environment Variables first, then falls back to host environment variables. Dataverse takes precedence so platform admins can change behavior without redeploying.
+
+- **Application Insights connection string**:
+  1. Dataverse Environment Variable `shi_ApplicationInsightsConnectionString` (explicit value, then default value)
+  2. Host env var `APPLICATIONINSIGHTS_CONNECTION_STRING`
+  3. Host env var `APPINSIGHTS_CONNECTION_STRING`
+- **Disable inner trace duplication** (set any to `1` to skip the platform tracer while still emitting telemetry):
+  1. Dataverse Environment Variable `shi_DisableInnerTraceDuplication`
+  2. Host env var `shi_DISABLE_INNER_TRACE_DUPLICATION`
+  3. Host env var `DISABLE_INNER_TRACE_DUPLICATION`
+
+The Dataverse lookup uses `services.ExecutionService` (the step run-as identity). Failures to read Environment Variables are swallowed and the next fallback in the list is used. The Dataverse lookup for the connection string runs once per process; the disable-trace flag is consulted on every plug-in execution so it can be toggled without restarting the sandbox.
 
 ### Deferred concern
 - `TraceWithContext` currently traces the full exception object to preserve detailed sandbox diagnostics. This is a deliberate tradeoff: it helps diagnosis, but full exception payloads can contain sensitive values. The team chose to document the concern now and revisit redaction or narrower logging later rather than changing the behavior in this refactor.

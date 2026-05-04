@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Query;
 
 namespace SHI.CRM.Plugins.Base.Telemetry
 {
@@ -38,22 +39,28 @@ namespace SHI.CRM.Plugins.Base.Telemetry
         }
 
         /// <summary>
-        /// Creates an adapter using the Application Insights connection string from environment variables.
-        /// Checks APPLICATIONINSIGHTS_CONNECTION_STRING then APPINSIGHTS_CONNECTION_STRING.
+        /// Creates an adapter using a Dataverse Environment Variable
+        /// (schema: <c>shi_ApplicationInsightsConnectionString</c>),
+        /// falling back to host environment variables
+        /// (<c>APPLICATIONINSIGHTS_CONNECTION_STRING</c> then <c>APPINSIGHTS_CONNECTION_STRING</c>).
         /// </summary>
-        public static TelemetryAdapter CreateFromEnvironment()
+        public static TelemetryAdapter CreateFromDataverseOrEnvironment(
+            IOrganizationService orgService
+        )
         {
             var connectionString =
-                Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+                TryGetConnectionStringFromDataverse(orgService)
+                ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
                 ?? Environment.GetEnvironmentVariable("APPINSIGHTS_CONNECTION_STRING");
 
             return Create(connectionString);
         }
 
         /// <summary>
-        /// Returns a singleton adapter created from environment configuration. Subsequent calls reuse the instance.
+        /// Returns a singleton adapter created from Dataverse + host environment configuration.
+        /// Subsequent calls reuse the instance.
         /// </summary>
-        public static TelemetryAdapter GetOrCreate()
+        public static TelemetryAdapter GetOrCreate(IOrganizationService orgService = null)
         {
             if (_instance != null)
                 return _instance;
@@ -62,7 +69,7 @@ namespace SHI.CRM.Plugins.Base.Telemetry
             {
                 if (_instance == null)
                 {
-                    _instance = CreateFromEnvironment();
+                    _instance = CreateFromDataverseOrEnvironment(orgService);
                 }
             }
 
@@ -305,6 +312,62 @@ namespace SHI.CRM.Plugins.Base.Telemetry
                 tracing?.Trace(
                     "Telemetry disabled: missing Application Insights SDK or connection string."
                 );
+            }
+        }
+
+        private static string TryGetConnectionStringFromDataverse(IOrganizationService orgService)
+        {
+            if (orgService == null)
+                return null;
+
+            try
+            {
+                var query = new QueryExpression("environmentvariabledefinition")
+                {
+                    ColumnSet = new ColumnSet("defaultvalue"),
+                    Criteria =
+                    {
+                        Conditions =
+                        {
+                            new ConditionExpression(
+                                "schemaname",
+                                ConditionOperator.Equal,
+                                "shi_ApplicationInsightsConnectionString"
+                            ),
+                        },
+                    },
+                };
+
+                query.LinkEntities.Add(
+                    new LinkEntity(
+                        "environmentvariabledefinition",
+                        "environmentvariablevalue",
+                        "environmentvariabledefinitionid",
+                        "environmentvariabledefinitionid",
+                        JoinOperator.LeftOuter
+                    )
+                    {
+                        Columns = new ColumnSet("value"),
+                        EntityAlias = "v",
+                    }
+                );
+
+                var result = orgService.RetrieveMultiple(query);
+                if (result?.Entities == null || result.Entities.Count == 0)
+                    return null;
+
+                var definition = result.Entities[0];
+                var explicitValue =
+                    definition.GetAttributeValue<AliasedValue>("v.value")?.Value as string;
+                if (!string.IsNullOrWhiteSpace(explicitValue))
+                    return explicitValue;
+
+                var defaultValue = definition.GetAttributeValue<string>("defaultvalue");
+                return string.IsNullOrWhiteSpace(defaultValue) ? null : defaultValue;
+            }
+            catch
+            {
+                return null;
             }
         }
 

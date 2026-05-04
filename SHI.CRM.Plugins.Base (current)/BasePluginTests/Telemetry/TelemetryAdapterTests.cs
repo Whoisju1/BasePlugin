@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Query;
 using Moq;
 using SHI.CRM.Plugins.Base.Telemetry;
 using Xunit;
@@ -106,6 +107,118 @@ namespace BasePluginTests.Telemetry
             TelemetryAdapter.TraceTelemetryDisabledOnce(tracing.Object);
 
             tracing.Verify(t => t.Trace(It.IsAny<string>()), Times.Once);
+        }
+
+        [Fact]
+        public void TryGetConnectionStringFromDataverse_returns_explicit_value_when_present()
+        {
+            var definition = new Entity("environmentvariabledefinition")
+            {
+                ["defaultvalue"] = "default-conn",
+                ["v.value"] = new AliasedValue(
+                    "environmentvariablevalue",
+                    "value",
+                    "explicit-conn"
+                ),
+            };
+
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection(new[] { definition }));
+
+            var method = typeof(TelemetryAdapter).GetMethod(
+                "TryGetConnectionStringFromDataverse",
+                BindingFlags.NonPublic | BindingFlags.Static
+            );
+
+            var value = method?.Invoke(null, new object[] { organizationService.Object }) as string;
+
+            Assert.Equal("explicit-conn", value);
+        }
+
+        [Fact]
+        public void TryGetConnectionStringFromDataverse_returns_default_when_no_explicit_value()
+        {
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(
+                    new EntityCollection
+                    {
+                        Entities =
+                        {
+                            new Entity("environmentvariabledefinition")
+                            {
+                                ["defaultvalue"] = "default-conn",
+                            },
+                        },
+                    }
+                );
+
+            var method = typeof(TelemetryAdapter).GetMethod(
+                "TryGetConnectionStringFromDataverse",
+                BindingFlags.NonPublic | BindingFlags.Static
+            );
+
+            var value = method?.Invoke(null, new object[] { organizationService.Object }) as string;
+
+            Assert.Equal("default-conn", value);
+        }
+
+        [Fact]
+        public void TryGetConnectionStringFromDataverse_returns_null_when_org_service_is_null()
+        {
+            var method = typeof(TelemetryAdapter).GetMethod(
+                "TryGetConnectionStringFromDataverse",
+                BindingFlags.NonPublic | BindingFlags.Static
+            );
+
+            var value = method?.Invoke(null, new object[] { null }) as string;
+
+            Assert.Null(value);
+        }
+
+        [Fact]
+        public void TryGetConnectionStringFromDataverse_queries_for_expected_schema_name()
+        {
+            QueryExpression captured = null;
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Callback<QueryBase>(q => captured = q as QueryExpression)
+                .Returns(new EntityCollection());
+
+            var method = typeof(TelemetryAdapter).GetMethod(
+                "TryGetConnectionStringFromDataverse",
+                BindingFlags.NonPublic | BindingFlags.Static
+            );
+
+            method?.Invoke(null, new object[] { organizationService.Object });
+
+            Assert.NotNull(captured);
+            Assert.Equal("environmentvariabledefinition", captured.EntityName);
+            var condition = Assert.Single(captured.Criteria.Conditions);
+            Assert.Equal("schemaname", condition.AttributeName);
+            Assert.Equal("shi_ApplicationInsightsConnectionString", condition.Values[0]);
+        }
+
+        [Fact]
+        public void TryGetConnectionStringFromDataverse_returns_null_when_dataverse_throws()
+        {
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Throws(new InvalidOperationException("dataverse offline"));
+
+            var method = typeof(TelemetryAdapter).GetMethod(
+                "TryGetConnectionStringFromDataverse",
+                BindingFlags.NonPublic | BindingFlags.Static
+            );
+
+            var value = method?.Invoke(null, new object[] { organizationService.Object }) as string;
+
+            Assert.Null(value);
         }
     }
 }

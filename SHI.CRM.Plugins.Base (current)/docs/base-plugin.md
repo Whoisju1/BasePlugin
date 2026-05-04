@@ -9,8 +9,18 @@
    - `IPluginExecutionContext`
    - `IOrganizationService`
    - `ITracingService`
-3) `TelemetryAdapter` loads Application Insights connection string from `APPLICATIONINSIGHTS_CONNECTION_STRING` or `APPINSIGHTS_CONNECTION_STRING`. If the connection string or Application Insights SDK is unavailable, telemetry is disabled but platform tracing continues.
-4) `TelemetryTracingService` wraps the platform tracer to mirror messages to Application Insights. Duplication of inner tracing defaults to **enabled** and can be disabled by env var `DISABLE_INNER_TRACE_DUPLICATION=1`.
+3) `TelemetryAdapter` resolves its Application Insights connection string in this order:
+    1. Dataverse Environment Variable `shi_ApplicationInsightsConnectionString` (explicit value, then default value), read via `EnvironmentVariableReader` using `services.ExecutionService`.
+    2. Host environment variable `APPLICATIONINSIGHTS_CONNECTION_STRING`.
+    3. Host environment variable `APPINSIGHTS_CONNECTION_STRING`.
+
+    If none of these resolve to a value, or the Application Insights SDK is unavailable, telemetry is disabled but platform tracing continues.
+4) `TelemetryTracingService` wraps the platform tracer to mirror messages to Application Insights. Duplication of inner tracing defaults to **enabled** and can be disabled by setting any of:
+    - Dataverse Environment Variable `shi_DisableInnerTraceDuplication` to `1`
+    - Host environment variable `shi_DISABLE_INNER_TRACE_DUPLICATION=1`
+    - Host environment variable `DISABLE_INNER_TRACE_DUPLICATION=1`
+
+    The Dataverse value is checked first so platform admins can flip the flag without redeploying.
 5) `ExecutePluginLogic` (implemented by derived classes) receives both tracers.
 6) Exceptions:
     - `InvalidPluginExecutionException` is traced, then rethrown (user-facing business errors).

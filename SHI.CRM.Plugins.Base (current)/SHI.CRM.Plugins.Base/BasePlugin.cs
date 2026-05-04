@@ -15,7 +15,9 @@ namespace SHI.CRM.Plugins.Base
     /// Derived plug-ins receive a <see cref="PluginServices"/> container so execution-time work and
     /// permission-sensitive checks can use different organization service identities when needed.
     /// Uses <see cref="TelemetryTracingService"/> to mirror traces to Application Insights when available.
-    /// Inner tracing duplication is controlled by the DISABLE_INNER_TRACE_DUPLICATION environment variable.
+    /// Telemetry connection string and the inner-trace duplication flag are read from Dataverse
+    /// Environment Variables first (<c>shi_ApplicationInsightsConnectionString</c>,
+    /// <c>shi_DisableInnerTraceDuplication</c>) with fallback to host environment variables.
     /// </summary>
     public abstract class BasePlugin : IPlugin
     {
@@ -40,7 +42,7 @@ namespace SHI.CRM.Plugins.Base
             var stopwatch = Stopwatch.StartNew();
             var services = PluginServiceResolver.Resolve(serviceProvider);
             var pluginType = GetType().FullName ?? string.Empty;
-            var telemetry = TelemetryAdapter.GetOrCreate();
+            var telemetry = TelemetryAdapter.GetOrCreate(services.ExecutionService);
             if (!telemetry.IsEnabled)
             {
                 TelemetryAdapter.TraceTelemetryDisabledOnce(services.Tracing);
@@ -50,12 +52,9 @@ namespace SHI.CRM.Plugins.Base
             var inputCount = services.Context?.InputParameters?.Count ?? 0;
             var sharedCount = services.Context?.SharedVariables?.Count ?? 0;
 
-            // Default to duplicating traces unless explicitly disabled via env flag.
-            var duplicateInnerTrace = !string.Equals(
-                Environment.GetEnvironmentVariable("DISABLE_INNER_TRACE_DUPLICATION"),
-                "1",
-                StringComparison.OrdinalIgnoreCase
-            );
+            // Default to duplicating traces unless explicitly disabled via Dataverse env var
+            // (shi_DisableInnerTraceDuplication) or host environment variable.
+            var duplicateInnerTrace = ShouldDuplicateInnerTrace(services.ExecutionService);
 
             commonProps["TraceDuplicationEnabled"] = duplicateInnerTrace.ToString();
             commonProps["TelemetryEnabled"] = telemetry.IsEnabled.ToString();
@@ -176,5 +175,19 @@ namespace SHI.CRM.Plugins.Base
             Exception ex,
             IPluginExecutionContext context
         ) => PluginExceptionFactory.CreateUserSafeException(ex, context);
+
+        private static bool ShouldDuplicateInnerTrace(IOrganizationService orgService)
+        {
+            // Dataverse Environment Variable schema: shi_DisableInnerTraceDuplication
+            var disableFlag =
+                Telemetry.EnvironmentVariableReader.GetValue(
+                    orgService,
+                    "shi_DisableInnerTraceDuplication"
+                )
+                ?? Environment.GetEnvironmentVariable("shi_DISABLE_INNER_TRACE_DUPLICATION")
+                ?? Environment.GetEnvironmentVariable("DISABLE_INNER_TRACE_DUPLICATION");
+
+            return !string.Equals(disableFlag, "1", StringComparison.OrdinalIgnoreCase);
+        }
     }
 }
