@@ -198,10 +198,16 @@ var target = services.ExecutionService.Retrieve(
 ### Telemetry adapter behavior
 - Resilient: errors in the Application Insights SDK are swallowed.
 - Blank/null connection string means telemetry is disabled.
-- `TelemetryAdapter.GetOrCreate()` reuses an enabled adapter only while the resolved connection string is unchanged; disabled adapters are retried on later executions.
+- `TelemetryAdapter.GetOrCreate(orgService)` reuses an enabled adapter only while the resolved connection string is unchanged; disabled adapters are retried on later executions so a connection string added after the first call can still take effect.
 - The Application Insights client is created with a dedicated telemetry configuration instead of mutating `TelemetryConfiguration.Active`.
 - Completion trace: `BasePlugin.Execute completed` emits with `TotalDurationMs` for coarse timing.
 - Metrics emitted (when telemetry is enabled): `InputParameterCount`, `SharedVariableCount`, and `TotalDurationMs` (ms). These land in `customMetrics` and are easier to chart/alert without casting.
+
+### Configuration caching and test seams
+- `EnvironmentVariableReader.GetValue` has two forms: an uncached lookup and a TTL-cached overload `GetValue(orgService, schemaName, TimeSpan cacheFor)`. The cache stores both hits and `null` results to avoid repeated round-trips for missing flags. `TimeSpan.Zero` skips the cache entirely.
+- The `shi_DisableInnerTraceDuplication` flag is read through the cached overload with `BasePlugin.DisableTraceFlagCacheTtl` (60s). Flag changes from a Dataverse admin propagate within that window without a sandbox restart.
+- `EnvironmentVariableReader.ClearCache()` is a test seam; the test project calls it from its test-class constructors so xUnit's unordered runs do not see a previous test's cached value.
+- `BasePlugin.ResolveTelemetry(IOrganizationService)` is `internal virtual`. The default returns the singleton from `TelemetryAdapter.GetOrCreate`; tests inside the assembly (the test project shares the assembly via the projitems import) override the hook to inject a stub adapter without touching `TelemetryAdapter._instance` through reflection.
 
 #### Telemetry dimensions (what they mean and when to use)
 - `CorrelationId`: End-to-end Application Insights correlation across services. Use when stitching a path that spans portal/API → plugin → downstream services.

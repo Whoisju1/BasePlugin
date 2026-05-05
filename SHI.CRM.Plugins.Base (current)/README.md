@@ -140,7 +140,7 @@ The Dataverse lookup uses `services.ExecutionService` (the step run-as identity)
 
 The disable-trace flag is read on every plug-in execution but cached per-process for 60 seconds (`BasePlugin.DisableTraceFlagCacheTtl`), so a hot-path plug-in won't hit Dataverse for the flag on every invocation. Admins flipping the flag pick up the change within the TTL window.
 
-Tests can override telemetry resolution by subclassing and overriding `BasePlugin.ResolveTelemetry(IOrganizationService)` (declared `internal virtual`); the default implementation returns `TelemetryAdapter.GetOrCreate(orgService)`.
+Tests can override telemetry resolution by overriding `BasePlugin.ResolveTelemetry(IOrganizationService)`. The hook is declared `internal virtual`, so the override must live in the same assembly as `BasePlugin` — the test project shares the assembly through the `<Import Project="..\SHI.CRM.Plugins.Base\SHI.CRM.Plugins.Base.projitems" Label="Shared" />` reference, so `TestableChildPlugin` can supply a stub adapter without reflecting into the singleton. The default implementation returns `TelemetryAdapter.GetOrCreate(orgService)`.
 
 ### Deferred concern
 - `TraceWithContext` currently traces the full exception object to preserve detailed sandbox diagnostics. This is a deliberate tradeoff: it helps diagnosis, but full exception payloads can contain sensitive values. The team chose to document the concern now and revisit redaction or narrower logging later rather than changing the behavior in this refactor.
@@ -156,13 +156,17 @@ Tests can override telemetry resolution by subclassing and overriding `BasePlugi
 - `PluginServiceResolver.cs` resolves the dual-service identity model.
 - `PluginServices.cs` carries the resolved services into derived plug-ins.
 - `TelemetryAdapter.cs` and `TelemetryTracingService.cs` handle Application Insights integration.
+- `EnvironmentVariableReader.cs` reads Dataverse Environment Variables (explicit value, then default value) with an optional TTL cache for hot-path callers.
 - `ContextInputExtensions.cs` and `PluginExceptionFactory.cs` provide shared validation and exception helpers.
 - Application Insights is optional and activated only when the runtime environment provides the SDK and connection string.
 
 ## Testing
 - Test project: [BasePluginTests.csproj](BasePluginTests/BasePluginTests.csproj)
 - Contract coverage: [BasePluginTests.cs](BasePluginTests/BasePluginTests.cs), [TestableChildPlugin.cs](BasePluginTests/TestableChildPlugin.cs)
+- Metrics coverage: [BasePluginMetricsTests.cs](BasePluginTests/BasePluginMetricsTests.cs)
 - Resolver coverage: [PluginServiceResolverTests.cs](BasePluginTests/Infrastructure/PluginServiceResolverTests.cs)
+- Telemetry coverage: [TelemetryAdapterTests.cs](BasePluginTests/Telemetry/TelemetryAdapterTests.cs), [TelemetryTracingServiceTests.cs](BasePluginTests/Telemetry/TelemetryTracingServiceTests.cs), [EnvironmentVariableReaderTests.cs](BasePluginTests/Telemetry/EnvironmentVariableReaderTests.cs)
+- Diagnostics, exceptions, validation: [TracingExtensionsTests.cs](BasePluginTests/Diagnostics/TracingExtensionsTests.cs), [PluginExceptionFactoryTests.cs](BasePluginTests/Exceptions/PluginExceptionFactoryTests.cs), [ContextInputExtensionsTests.cs](BasePluginTests/Validation/ContextInputExtensionsTests.cs)
 - Supporting harness: [PluginTestHarness.cs](BasePluginTests/Common/PluginTestHarness.cs)
 
 Run the suite from the repo root:
@@ -171,17 +175,24 @@ Run the suite from the repo root:
 dotnet test "SHI.CRM.Plugins.Base (current)\SHI.CRM.Plugins.Base.slnx"
 ```
 
+Test classes that exercise the env-var lookup call `EnvironmentVariableReader.ClearCache()` in their constructor so cached values do not bleed across xUnit's unordered runs.
+
 Key scenarios covered:
 
 - dual-service resolution when `UserId` and `InitiatingUserId` differ
 - service reuse when both identities match
 - propagation of `PluginServices` into derived plug-in logic
 - business, Dataverse, unexpected, and async retry exception handling
-- telemetry disabled/connection-string behavior, adapter reuse, trace preservation, and deterministic singleton behavior
+- telemetry disabled when the connection string is null/empty/whitespace
+- telemetry adapter reuse while the connection string is unchanged, and re-creation after rotation
+- platform tracing preserved by `cloudTracing` when telemetry is disabled
+- injection of a stub `TelemetryAdapter` via `BasePlugin.ResolveTelemetry`
+- per-process TTL cache for the `shi_DisableInnerTraceDuplication` flag (hit, null cache, zero-TTL skip, schema isolation, `ClearCache`)
 
 ## Gotchas & Decisions
-- Architectural decision: [ADR 0002](../../docs/decisions/0002-expose-plugin-execution-and-permission-services.md)
-- The base intentionally does **not** add a global depth guard. Recursion protection remains the responsibility of individual plug-ins because acceptable depth thresholds depend on each step’s registration and business flow.
+- The dual-identity service model (`ExecutionService` for step run-as work, `PermissionCheckService` for caller-scoped reads) is intentional. The split forces reviewers and authors to make the identity choice explicit at every call site instead of inheriting an ambient `OrganizationService`. See `PluginServiceResolver` for the resolution logic and the [Service Identity Guidance](#service-identity-guidance) section above for usage.
+- Telemetry duplication trade-offs are tracked in [ADR 0001](docs/adr/0001-telemetry-tracing-duplication.md).
+- The base intentionally does **not** add a global depth guard. Recursion protection remains the responsibility of individual plug-ins because acceptable depth thresholds depend on each step's registration and business flow.
 - `PluginServices` intentionally has no generic `OrganizationService` alias. Use `ExecutionService` or `PermissionCheckService` so intent stays clear.
 - Full exception tracing is intentionally preserved for now; treat it as a known tradeoff and avoid tracing additional sensitive payloads in derived code.
 
