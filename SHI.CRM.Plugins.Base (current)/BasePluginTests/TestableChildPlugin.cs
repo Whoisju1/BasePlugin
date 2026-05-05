@@ -2,6 +2,7 @@
 using Microsoft.Xrm.Sdk;
 using SHI.CRM.Plugins.Base;
 using SHI.CRM.Plugins.Base.Infrastructure;
+using SHI.CRM.Plugins.Base.Telemetry;
 
 
 namespace BasePluginTests
@@ -30,6 +31,14 @@ namespace BasePluginTests
             new() { ExceptionToThrow = exception };
 
         public Exception ExceptionToThrow { get; init; }
+
+        /// <summary>
+        /// When set, <see cref="BasePlugin.ResolveTelemetry"/> returns this instance instead of the singleton.
+        /// </summary>
+        public TelemetryAdapter TelemetryOverride { get; init; }
+
+        internal override TelemetryAdapter ResolveTelemetry(IOrganizationService orgService) =>
+            TelemetryOverride ?? base.ResolveTelemetry(orgService);
 
         protected override void ExecutePluginLogic(
             IServiceProvider serviceProvider,

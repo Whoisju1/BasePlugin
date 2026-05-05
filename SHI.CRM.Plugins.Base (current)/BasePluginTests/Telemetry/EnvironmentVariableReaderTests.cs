@@ -9,6 +9,11 @@ namespace BasePluginTests.Telemetry
 {
     public class EnvironmentVariableReaderTests
     {
+        public EnvironmentVariableReaderTests()
+        {
+            EnvironmentVariableReader.ClearCache();
+        }
+
         [Fact]
         public void GetValue_returns_explicit_value_when_present()
         {
@@ -136,6 +141,142 @@ namespace BasePluginTests.Telemetry
             var condition = Assert.Single(captured.Criteria.Conditions);
             Assert.Equal("schemaname", condition.AttributeName);
             Assert.Equal("shi_DisableInnerTraceDuplication", condition.Values[0]);
+        }
+
+        [Fact]
+        public void GetValue_with_ttl_caches_result_within_window()
+        {
+            var definition = new Entity("environmentvariabledefinition")
+            {
+                ["v.value"] = new AliasedValue("environmentvariablevalue", "value", "first"),
+            };
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection(new[] { definition }));
+
+            var first = EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_CacheTest",
+                TimeSpan.FromMinutes(5)
+            );
+            var second = EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_CacheTest",
+                TimeSpan.FromMinutes(5)
+            );
+
+            Assert.Equal("first", first);
+            Assert.Equal("first", second);
+            organizationService.Verify(
+                s => s.RetrieveMultiple(It.IsAny<QueryExpression>()),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public void GetValue_with_ttl_caches_null_results_too()
+        {
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection());
+
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_MissingFlag",
+                TimeSpan.FromMinutes(5)
+            );
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_MissingFlag",
+                TimeSpan.FromMinutes(5)
+            );
+
+            organizationService.Verify(
+                s => s.RetrieveMultiple(It.IsAny<QueryExpression>()),
+                Times.Once
+            );
+        }
+
+        [Fact]
+        public void GetValue_with_zero_ttl_skips_cache()
+        {
+            var definition = new Entity("environmentvariabledefinition")
+            {
+                ["v.value"] = new AliasedValue("environmentvariablevalue", "value", "x"),
+            };
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection(new[] { definition }));
+
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_NoCache",
+                TimeSpan.Zero
+            );
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_NoCache",
+                TimeSpan.Zero
+            );
+
+            organizationService.Verify(
+                s => s.RetrieveMultiple(It.IsAny<QueryExpression>()),
+                Times.Exactly(2)
+            );
+        }
+
+        [Fact]
+        public void ClearCache_forces_fresh_lookup()
+        {
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection());
+
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_ClearTest",
+                TimeSpan.FromMinutes(5)
+            );
+            EnvironmentVariableReader.ClearCache();
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_ClearTest",
+                TimeSpan.FromMinutes(5)
+            );
+
+            organizationService.Verify(
+                s => s.RetrieveMultiple(It.IsAny<QueryExpression>()),
+                Times.Exactly(2)
+            );
+        }
+
+        [Fact]
+        public void GetValue_with_ttl_isolates_per_schema_name()
+        {
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection());
+
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_FlagA",
+                TimeSpan.FromMinutes(5)
+            );
+            EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_FlagB",
+                TimeSpan.FromMinutes(5)
+            );
+
+            organizationService.Verify(
+                s => s.RetrieveMultiple(It.IsAny<QueryExpression>()),
+                Times.Exactly(2)
+            );
         }
     }
 }

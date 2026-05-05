@@ -21,6 +21,13 @@ namespace SHI.CRM.Plugins.Base
     /// </summary>
     public abstract class BasePlugin : IPlugin
     {
+        /// <summary>
+        /// TTL for the inner-trace duplication flag lookup. Read on every Execute, so caching avoids
+        /// a Dataverse round-trip on the hot path while still letting platform admins flip the flag
+        /// within the TTL window without a sandbox restart.
+        /// </summary>
+        internal static readonly TimeSpan DisableTraceFlagCacheTtl = TimeSpan.FromSeconds(60);
+
         public BasePlugin(string unsecureConfig = null, string secureConfig = null)
         {
             UnsecureConfig = unsecureConfig;
@@ -42,7 +49,7 @@ namespace SHI.CRM.Plugins.Base
             var stopwatch = Stopwatch.StartNew();
             var services = PluginServiceResolver.Resolve(serviceProvider);
             var pluginType = GetType().FullName ?? string.Empty;
-            var telemetry = TelemetryAdapter.GetOrCreate(services.ExecutionService);
+            var telemetry = ResolveTelemetry(services.ExecutionService);
             if (!telemetry.IsEnabled)
             {
                 TelemetryAdapter.TraceTelemetryDisabledOnce(services.Tracing);
@@ -176,13 +183,24 @@ namespace SHI.CRM.Plugins.Base
             IPluginExecutionContext context
         ) => PluginExceptionFactory.CreateUserSafeException(ex, context);
 
+        /// <summary>
+        /// Resolves the telemetry adapter for this invocation. Default implementation returns the process-wide
+        /// singleton from <see cref="TelemetryAdapter.GetOrCreate"/>. Override to inject a stub adapter in tests
+        /// or to customize telemetry resolution per derived plug-in.
+        /// </summary>
+        internal virtual TelemetryAdapter ResolveTelemetry(IOrganizationService orgService) =>
+            TelemetryAdapter.GetOrCreate(orgService);
+
         private static bool ShouldDuplicateInnerTrace(IOrganizationService orgService)
         {
-            // Dataverse Environment Variable schema: shi_DisableInnerTraceDuplication
+            // Dataverse Environment Variable schema: shi_DisableInnerTraceDuplication.
+            // Cached for DisableTraceFlagCacheTtl so a high-volume plug-in doesn't query Dataverse on every
+            // Execute. Admins flipping the flag pick it up after the TTL expires.
             var disableFlag =
                 Telemetry.EnvironmentVariableReader.GetValue(
                     orgService,
-                    "shi_DisableInnerTraceDuplication"
+                    "shi_DisableInnerTraceDuplication",
+                    DisableTraceFlagCacheTtl
                 )
                 ?? Environment.GetEnvironmentVariable("shi_DISABLE_INNER_TRACE_DUPLICATION")
                 ?? Environment.GetEnvironmentVariable("DISABLE_INNER_TRACE_DUPLICATION");

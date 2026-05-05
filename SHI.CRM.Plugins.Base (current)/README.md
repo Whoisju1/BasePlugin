@@ -138,6 +138,10 @@ The base looks up telemetry configuration from Dataverse Environment Variables f
 
 The Dataverse lookup uses `services.ExecutionService` (the step run-as identity). Failures to read Environment Variables are swallowed and the next fallback in the list is used. The telemetry adapter reuses an enabled client only while the resolved connection string is unchanged, so adding or rotating the connection string can take effect without waiting for a sandbox recycle. Disabled adapters are retried on later executions.
 
+The disable-trace flag is read on every plug-in execution but cached per-process for 60 seconds (`BasePlugin.DisableTraceFlagCacheTtl`), so a hot-path plug-in won't hit Dataverse for the flag on every invocation. Admins flipping the flag pick up the change within the TTL window.
+
+Tests can override telemetry resolution by subclassing and overriding `BasePlugin.ResolveTelemetry(IOrganizationService)` (declared `internal virtual`); the default implementation returns `TelemetryAdapter.GetOrCreate(orgService)`.
+
 ### Deferred concern
 - `TraceWithContext` currently traces the full exception object to preserve detailed sandbox diagnostics. This is a deliberate tradeoff: it helps diagnosis, but full exception payloads can contain sensitive values. The team chose to document the concern now and revisit redaction or narrower logging later rather than changing the behavior in this refactor.
 

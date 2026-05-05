@@ -13,3 +13,6 @@
 - `TelemetryTracingService` now preserves platform tracing when telemetry is disabled, even if inner trace duplication is disabled.
 - Test coverage now includes blank connection-string behavior, adapter reuse, trace preservation, and deterministic singleton tests.
 - Test project now pins `System.Security.Cryptography.Xml` to `10.0.7` and suppresses the intentional Dataverse SDK `NU1701` compatibility warnings.
+- Added `BasePlugin.ResolveTelemetry` (`internal virtual`) so tests can inject a stub `TelemetryAdapter` without reflection on the singleton.
+- `EnvironmentVariableReader.GetValue` now offers a TTL-based caching overload (and a `ClearCache` test seam) so hot-path callers avoid a Dataverse round-trip on every plug-in execution.
+- `BasePlugin.ShouldDuplicateInnerTrace` now caches the `shi_DisableInnerTraceDuplication` lookup for 60 seconds. Admins flipping the flag pick up the change after the TTL expires.

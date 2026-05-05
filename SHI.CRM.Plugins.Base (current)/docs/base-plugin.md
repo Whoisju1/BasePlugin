@@ -20,7 +20,7 @@
     - Host environment variable `shi_DISABLE_INNER_TRACE_DUPLICATION=1`
     - Host environment variable `DISABLE_INNER_TRACE_DUPLICATION=1`
 
-    The Dataverse value is checked first so platform admins can flip the flag without redeploying. Inner tracing is still forced on when telemetry is disabled so `cloudTracing` does not drop messages.
+    The Dataverse value is checked first so platform admins can flip the flag without redeploying. The Dataverse lookup is cached per-process for 60 seconds (see `BasePlugin.DisableTraceFlagCacheTtl`), so high-volume plug-ins do not hit Dataverse on every invocation; flag changes take effect within the TTL window. Inner tracing is still forced on when telemetry is disabled so `cloudTracing` does not drop messages.
 5) `ExecutePluginLogic` (implemented by derived classes) receives both tracers.
 6) Exceptions:
     - `InvalidPluginExecutionException` is traced, then rethrown (user-facing business errors).

@@ -4,6 +4,7 @@ using BasePluginTests.Common;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Moq;
+using SHI.CRM.Plugins.Base.Telemetry;
 using Xunit;
 
 namespace BasePluginTests
@@ -12,7 +13,12 @@ namespace BasePluginTests
     {
         private readonly PluginTestHarness _harness = new();
 
-        public BasePluginTests() { }
+        public BasePluginTests()
+        {
+            // The disable-trace flag is now cached per-process; clear so the previous test's value
+            // doesn't bleed into this one.
+            EnvironmentVariableReader.ClearCache();
+        }
 
         [Fact]
         public void Execute_throws_when_service_provider_is_null()
@@ -282,6 +288,63 @@ namespace BasePluginTests
                         )
                     ),
                 Times.AtLeastOnce
+            );
+        }
+
+        [Fact]
+        public void Execute_uses_telemetry_override_when_provided()
+        {
+            // The override hook should bypass the singleton entirely.
+            var overrideAdapter = (TelemetryAdapter)
+                typeof(TelemetryAdapter)
+                    .GetConstructor(
+                        System.Reflection.BindingFlags.Instance
+                            | System.Reflection.BindingFlags.NonPublic,
+                        binder: null,
+                        new[]
+                        {
+                            typeof(object),
+                            typeof(System.Reflection.MethodInfo),
+                            typeof(System.Reflection.MethodInfo),
+                            typeof(System.Reflection.MethodInfo),
+                            typeof(System.Reflection.MethodInfo),
+                        },
+                        modifiers: null
+                    )!
+                    .Invoke(new object[] { null, null, null, null, null });
+
+            var plugin = new TestableChildPlugin { TelemetryOverride = overrideAdapter };
+
+            // Should run cleanly without ever touching the singleton. The TelemetryAdapter delivered
+            // to ExecutePluginLogic is wrapped in TelemetryTracingService, so we just assert the path runs.
+            plugin.Execute(_harness.ServiceProvider.Object);
+        }
+
+        [Fact]
+        public void Execute_caches_disable_trace_flag_across_invocations()
+        {
+            _harness
+                .ExecutionService.Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection());
+
+            var plugin = new TestableChildPlugin();
+
+            plugin.Execute(_harness.ServiceProvider.Object);
+            plugin.Execute(_harness.ServiceProvider.Object);
+            plugin.Execute(_harness.ServiceProvider.Object);
+
+            // Three Execute calls should result in only one Dataverse RetrieveMultiple for the disable-trace flag,
+            // because the cached value is reused for the cache TTL window.
+            _harness.ExecutionService.Verify(
+                s =>
+                    s.RetrieveMultiple(
+                        It.Is<QueryExpression>(q =>
+                            q.EntityName == "environmentvariabledefinition"
+                            && (string)q.Criteria.Conditions[0].Values[0]
+                                == "shi_DisableInnerTraceDuplication"
+                        )
+                    ),
+                Times.Once
             );
         }
 
