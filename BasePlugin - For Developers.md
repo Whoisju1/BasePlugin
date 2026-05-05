@@ -12,6 +12,31 @@ You override one method: `ExecutePluginLogic`. The base does the rest.
 
 ---
 
+## Prerequisites — what you need to install
+
+**Always required:**
+
+- `Microsoft.Xrm.Sdk` (typically pulled in via `Microsoft.CrmSdk.CoreAssemblies`). This is the Dataverse SDK that every plug-in already references — no surprise.
+- A reference to `SHI.CRM.Plugins.Base` itself (added the same way as any other shared library in your solution).
+
+**That's it for the basics.** A plug-in that only needs tracing, exception handling, and the dual-identity service model can use the base with no extra packages.
+
+**Optional — only if you want Application Insights telemetry:**
+
+```xml
+<PackageReference Include="Microsoft.ApplicationInsights" Version="2.22.0" />
+```
+
+A few important deployment details:
+
+- The Application Insights DLL must be **deployed alongside** your plug-in assembly in the registration package. The base loads it from the same folder via reflection.
+- **Do not ILMerge or ILRepack** the AI assembly into your plug-in DLL — Dataverse early-bound proxy metadata breaks when AI types are merged in. Keep them as separate files.
+- If the package is missing or fails to load at runtime, the base detects it and silently disables telemetry. Your plug-in still runs, you still get platform tracing, and a single "Telemetry disabled" message is traced once per process. You won't get a crash or a compile error.
+
+After the package is referenced and deployed, telemetry turns on automatically as soon as a connection string is resolved (see Configuration below). No code changes, no redeploy needed to flip it on or off later.
+
+---
+
 ## What you get when you derive from it
 
 - Two organization services (one for the step run-as identity, one for the initiating caller)

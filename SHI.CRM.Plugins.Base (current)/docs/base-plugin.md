@@ -3,6 +3,50 @@
 ## Purpose
 `BasePlugin` centralizes service resolution, tracing, Application Insights mirroring, and exception handling for Dynamics 365 CE plugins. Derivatives implement business logic only.
 
+## Prerequisites
+
+### Required (always)
+- `Microsoft.Xrm.Sdk` (typically via `Microsoft.CrmSdk.CoreAssemblies`) — the Dataverse SDK that every plug-in already depends on.
+- A reference to `SHI.CRM.Plugins.Base` itself (the shared project import or however your solution consumes the base).
+
+The base does **not** require the Application Insights SDK to compile or run. Plug-ins that don't need telemetry can use the base as-is — they get tracing, exception normalization, async retry classification, and the dual-identity service model with no additional packages.
+
+### Optional (only if you want Application Insights telemetry)
+- `Microsoft.ApplicationInsights` NuGet package, e.g.:
+
+```xml
+<PackageReference Include="Microsoft.ApplicationInsights" Version="2.22.0" />
+```
+
+The base resolves the Application Insights types via reflection. If the package is missing, fails to load, or the connection string is unset, telemetry silently disables itself — `cloudTracing` falls back to the platform tracer, plug-in execution continues, and a single "Telemetry disabled" message is traced once per process.
+
+#### Deployment notes for the Application Insights assembly
+- Include `Microsoft.ApplicationInsights.dll` alongside the plug-in assembly in the registration package. The base loads it from the same folder via reflection.
+- **Do not ILMerge or ILRepack** the Application Insights DLL into your plug-in assembly. Dataverse early-bound proxy metadata can break when AI types are merged into a plug-in DLL, producing "unknown entity type" errors at runtime.
+- Pick a package version compatible with your plug-in's target framework. The 2.x line is the right choice for the .NET Framework 4.6.2+ Dataverse sandbox.
+
+#### Turning telemetry on at runtime
+After the package is referenced and deployed, set the connection string in **one** of these (lookup order — Dataverse first, host env vars as fallback):
+
+1. Dataverse Environment Variable `shi_ApplicationInsightsConnectionString`
+2. Host environment variable `APPLICATIONINSIGHTS_CONNECTION_STRING`
+3. Host environment variable `APPINSIGHTS_CONNECTION_STRING`
+
+Telemetry starts flowing from the next plug-in execution — **no redeploy required.** The connection string format comes from the Azure Application Insights resource, e.g. `InstrumentationKey=<guid>;IngestionEndpoint=https://<region>.in.applicationinsights.azure.com/`.
+
+#### Verifying it's working
+The simplest check is to look for the `TelemetryEnabled` dimension on any trace from your plug-in:
+
+```kusto
+traces
+| where customDimensions.PluginType == 'Your.Namespace.YourPlugin'
+| project timestamp, customDimensions.TelemetryEnabled, message
+| order by timestamp desc
+| take 5
+```
+
+`TelemetryEnabled == True` means the SDK loaded and the connection string resolved. `TelemetryEnabled == False` (or no rows at all) means either the SDK isn't deployed alongside the plug-in or the connection string didn't resolve through any of the three sources above.
+
 ## Runtime wiring
 1) CRM calls `BasePlugin.Execute(IServiceProvider)`.
 2) `PluginServiceResolver` pulls:

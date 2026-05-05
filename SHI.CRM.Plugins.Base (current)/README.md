@@ -24,6 +24,22 @@ This module is a shared base library, not a directly registered plug-in step.
 | Pre-Image       | `N/A - shared base library` |
 | Post-Image      | `N/A - shared base library` |
 
+## Prerequisites
+
+The base itself only needs the Dataverse SDK (`Microsoft.Xrm.Sdk`, typically via `Microsoft.CrmSdk.CoreAssemblies`) — the same SDK every plug-in already references. No additional packages are required to compile or run a plug-in on top of `BasePlugin`.
+
+Application Insights telemetry is **optional**. To enable it, the consuming plug-in must add a NuGet reference to `Microsoft.ApplicationInsights` (the 2.x line is the right choice for the Dataverse sandbox):
+
+```xml
+<PackageReference Include="Microsoft.ApplicationInsights" Version="2.22.0" />
+```
+
+The base resolves Application Insights types via reflection. If the SDK isn't deployed alongside the plug-in, or the connection string doesn't resolve through any of the configured sources, telemetry silently disables itself and platform tracing keeps working.
+
+When deploying, include `Microsoft.ApplicationInsights.dll` alongside the plug-in assembly in the registration package. **Do not ILMerge or ILRepack it into the plug-in DLL** — Dataverse early-bound proxy metadata breaks when AI types are merged in.
+
+See [docs/base-plugin.md](docs/base-plugin.md#prerequisites) for the full prerequisites section, including how to turn telemetry on at runtime and how to verify it's working.
+
 ## Business Logic
 Each derived plug-in now receives a `PluginServices` container instead of separate `context`, `orgService`, and `tracing` arguments. The execution flow is:
 
