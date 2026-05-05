@@ -86,7 +86,10 @@ namespace BasePluginTests.Telemetry
             var adapter = TelemetryAdapter.Create(" "); // force disabled
 
             adapter.TrackTrace("msg", new Dictionary<string, string>());
-            adapter.TrackException(new InvalidOperationException(), new Dictionary<string, string>());
+            adapter.TrackException(
+                new InvalidOperationException(),
+                new Dictionary<string, string>()
+            );
             adapter.Flush();
 
             Assert.False(adapter.IsEnabled);
@@ -110,7 +113,7 @@ namespace BasePluginTests.Telemetry
         }
 
         [Fact]
-        public void TryGetConnectionStringFromDataverse_returns_explicit_value_when_present()
+        public void ResolveConnectionString_returns_dataverse_explicit_value_when_present()
         {
             var definition = new Entity("environmentvariabledefinition")
             {
@@ -127,18 +130,13 @@ namespace BasePluginTests.Telemetry
                 .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
                 .Returns(new EntityCollection(new[] { definition }));
 
-            var method = typeof(TelemetryAdapter).GetMethod(
-                "TryGetConnectionStringFromDataverse",
-                BindingFlags.NonPublic | BindingFlags.Static
-            );
-
-            var value = method?.Invoke(null, new object[] { organizationService.Object }) as string;
+            var value = TelemetryAdapter.ResolveConnectionString(organizationService.Object);
 
             Assert.Equal("explicit-conn", value);
         }
 
         [Fact]
-        public void TryGetConnectionStringFromDataverse_returns_default_when_no_explicit_value()
+        public void ResolveConnectionString_returns_dataverse_default_when_no_explicit_value()
         {
             var organizationService = new Mock<IOrganizationService>();
             organizationService
@@ -156,31 +154,45 @@ namespace BasePluginTests.Telemetry
                     }
                 );
 
-            var method = typeof(TelemetryAdapter).GetMethod(
-                "TryGetConnectionStringFromDataverse",
-                BindingFlags.NonPublic | BindingFlags.Static
-            );
-
-            var value = method?.Invoke(null, new object[] { organizationService.Object }) as string;
+            var value = TelemetryAdapter.ResolveConnectionString(organizationService.Object);
 
             Assert.Equal("default-conn", value);
         }
 
         [Fact]
-        public void TryGetConnectionStringFromDataverse_returns_null_when_org_service_is_null()
+        public void ResolveConnectionString_returns_null_when_org_service_is_null_and_env_is_blank()
         {
-            var method = typeof(TelemetryAdapter).GetMethod(
-                "TryGetConnectionStringFromDataverse",
-                BindingFlags.NonPublic | BindingFlags.Static
+            var originalApplicationInsights = Environment.GetEnvironmentVariable(
+                "APPLICATIONINSIGHTS_CONNECTION_STRING"
+            );
+            var originalAppInsights = Environment.GetEnvironmentVariable(
+                "APPINSIGHTS_CONNECTION_STRING"
             );
 
-            var value = method?.Invoke(null, new object[] { null }) as string;
+            try
+            {
+                Environment.SetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING", null);
+                Environment.SetEnvironmentVariable("APPINSIGHTS_CONNECTION_STRING", null);
 
-            Assert.Null(value);
+                var value = TelemetryAdapter.ResolveConnectionString(null);
+
+                Assert.Null(value);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(
+                    "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                    originalApplicationInsights
+                );
+                Environment.SetEnvironmentVariable(
+                    "APPINSIGHTS_CONNECTION_STRING",
+                    originalAppInsights
+                );
+            }
         }
 
         [Fact]
-        public void TryGetConnectionStringFromDataverse_queries_for_expected_schema_name()
+        public void ResolveConnectionString_queries_for_expected_schema_name()
         {
             QueryExpression captured = null;
             var organizationService = new Mock<IOrganizationService>();
@@ -189,12 +201,7 @@ namespace BasePluginTests.Telemetry
                 .Callback<QueryBase>(q => captured = q as QueryExpression)
                 .Returns(new EntityCollection());
 
-            var method = typeof(TelemetryAdapter).GetMethod(
-                "TryGetConnectionStringFromDataverse",
-                BindingFlags.NonPublic | BindingFlags.Static
-            );
-
-            method?.Invoke(null, new object[] { organizationService.Object });
+            TelemetryAdapter.ResolveConnectionString(organizationService.Object);
 
             Assert.NotNull(captured);
             Assert.Equal("environmentvariabledefinition", captured.EntityName);
@@ -204,21 +211,209 @@ namespace BasePluginTests.Telemetry
         }
 
         [Fact]
-        public void TryGetConnectionStringFromDataverse_returns_null_when_dataverse_throws()
+        public void ResolveConnectionString_falls_back_to_host_environment_when_dataverse_throws()
         {
             var organizationService = new Mock<IOrganizationService>();
             organizationService
                 .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
                 .Throws(new InvalidOperationException("dataverse offline"));
 
-            var method = typeof(TelemetryAdapter).GetMethod(
-                "TryGetConnectionStringFromDataverse",
-                BindingFlags.NonPublic | BindingFlags.Static
+            var originalApplicationInsights = Environment.GetEnvironmentVariable(
+                "APPLICATIONINSIGHTS_CONNECTION_STRING"
+            );
+            var originalAppInsights = Environment.GetEnvironmentVariable(
+                "APPINSIGHTS_CONNECTION_STRING"
             );
 
-            var value = method?.Invoke(null, new object[] { organizationService.Object }) as string;
+            try
+            {
+                Environment.SetEnvironmentVariable(
+                    "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                    "host-conn"
+                );
+                Environment.SetEnvironmentVariable("APPINSIGHTS_CONNECTION_STRING", null);
 
-            Assert.Null(value);
+                var value = TelemetryAdapter.ResolveConnectionString(organizationService.Object);
+
+                Assert.Equal("host-conn", value);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(
+                    "APPLICATIONINSIGHTS_CONNECTION_STRING",
+                    originalApplicationInsights
+                );
+                Environment.SetEnvironmentVariable(
+                    "APPINSIGHTS_CONNECTION_STRING",
+                    originalAppInsights
+                );
+            }
+        }
+
+        [Fact]
+        public void GetOrCreate_returns_disabled_adapter_when_connection_string_is_missing()
+        {
+            var originalInstance = GetInstance();
+            var originalConnectionString = GetInstanceConnectionString();
+            OverrideAdapter(CreateEnabledAdapter(), "old-conn");
+
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(new EntityCollection());
+
+            try
+            {
+                var adapter = TelemetryAdapter.GetOrCreate(organizationService.Object);
+
+                Assert.False(adapter.IsEnabled);
+            }
+            finally
+            {
+                RestoreAdapter(originalInstance, originalConnectionString);
+            }
+        }
+
+        [Fact]
+        public void GetOrCreate_reuses_enabled_adapter_when_connection_string_matches()
+        {
+            var originalInstance = GetInstance();
+            var originalConnectionString = GetInstanceConnectionString();
+            var existing = CreateEnabledAdapter();
+            OverrideAdapter(existing, "same-conn");
+
+            var organizationService = new Mock<IOrganizationService>();
+            organizationService
+                .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
+                .Returns(
+                    new EntityCollection(
+                        new[]
+                        {
+                            new Entity("environmentvariabledefinition")
+                            {
+                                ["v.value"] = new AliasedValue(
+                                    "environmentvariablevalue",
+                                    "value",
+                                    "same-conn"
+                                ),
+                            },
+                        }
+                    )
+                );
+
+            try
+            {
+                var adapter = TelemetryAdapter.GetOrCreate(organizationService.Object);
+
+                Assert.Same(existing, adapter);
+            }
+            finally
+            {
+                RestoreAdapter(originalInstance, originalConnectionString);
+            }
+        }
+
+        private static TelemetryAdapter CreateEnabledAdapter()
+        {
+            var client = new TestTelemetryClient();
+            var ctor = typeof(TelemetryAdapter).GetConstructor(
+                BindingFlags.Instance | BindingFlags.NonPublic,
+                binder: null,
+                new[]
+                {
+                    typeof(object),
+                    typeof(MethodInfo),
+                    typeof(MethodInfo),
+                    typeof(MethodInfo),
+                    typeof(MethodInfo),
+                },
+                modifiers: null
+            );
+
+            return (TelemetryAdapter)
+                ctor.Invoke(
+                    new object[]
+                    {
+                        client,
+                        typeof(TestTelemetryClient).GetMethod(
+                            nameof(TestTelemetryClient.TrackException)
+                        ),
+                        typeof(TestTelemetryClient).GetMethod(
+                            nameof(TestTelemetryClient.TrackTrace)
+                        ),
+                        typeof(TestTelemetryClient).GetMethod(
+                            nameof(TestTelemetryClient.TrackMetric)
+                        ),
+                        typeof(TestTelemetryClient).GetMethod(nameof(TestTelemetryClient.Flush)),
+                    }
+                );
+        }
+
+        private static object GetInstance()
+        {
+            var field = typeof(TelemetryAdapter).GetField(
+                "_instance",
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+            return field?.GetValue(null);
+        }
+
+        private static string GetInstanceConnectionString()
+        {
+            var field = typeof(TelemetryAdapter).GetField(
+                "_instanceConnectionString",
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+            return field?.GetValue(null) as string;
+        }
+
+        private static void OverrideAdapter(TelemetryAdapter adapter, string connectionString)
+        {
+            var instance = typeof(TelemetryAdapter).GetField(
+                "_instance",
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+            var instanceConnectionString = typeof(TelemetryAdapter).GetField(
+                "_instanceConnectionString",
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+
+            instance?.SetValue(null, adapter);
+            instanceConnectionString?.SetValue(null, connectionString);
+        }
+
+        private static void RestoreAdapter(object instance, string connectionString)
+        {
+            var instanceField = typeof(TelemetryAdapter).GetField(
+                "_instance",
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+            var instanceConnectionString = typeof(TelemetryAdapter).GetField(
+                "_instanceConnectionString",
+                BindingFlags.Static | BindingFlags.NonPublic
+            );
+
+            instanceField?.SetValue(null, instance);
+            instanceConnectionString?.SetValue(null, connectionString);
+        }
+
+        private sealed class TestTelemetryClient
+        {
+            public void TrackMetric(
+                string name,
+                double value,
+                IDictionary<string, string> props
+            ) { }
+
+            public void TrackTrace(string message, IDictionary<string, string> props) { }
+
+            public void TrackException(
+                Exception ex,
+                IDictionary<string, string> props,
+                IDictionary<string, double> metrics
+            ) { }
+
+            public void Flush() { }
         }
     }
 }

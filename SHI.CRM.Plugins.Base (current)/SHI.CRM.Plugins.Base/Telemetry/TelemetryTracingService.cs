@@ -38,17 +38,20 @@ namespace SHI.CRM.Plugins.Base.Telemetry
 
         /// <summary>
         /// Traces to the inner service and mirrors to telemetry when enabled. Telemetry failures are swallowed.
+        /// If telemetry is disabled, the inner tracer is always called so cloudTracing never drops messages.
         /// </summary>
         /// <param name="format">Format string for the message; null or whitespace yields an empty telemetry message.</param>
         /// <param name="args">Format arguments; ignored when null or empty.</param>
         public void Trace(string format, params object[] args)
         {
-            if (_duplicateInnerTrace)
+            var telemetryEnabled = _telemetry != null && _telemetry.IsEnabled;
+
+            if (_duplicateInnerTrace || !telemetryEnabled)
             {
                 _inner?.Trace(format, args);
             }
 
-            if (_telemetry == null || !_telemetry.IsEnabled)
+            if (!telemetryEnabled)
                 return;
 
             try
@@ -82,7 +85,9 @@ namespace SHI.CRM.Plugins.Base.Telemetry
         /// <summary>
         /// Returns a shallow copy of telemetry properties to prevent downstream mutation of shared state.
         /// </summary>
-        private static Dictionary<string, string> CloneProps(IReadOnlyDictionary<string, string> source)
+        private static Dictionary<string, string> CloneProps(
+            IReadOnlyDictionary<string, string> source
+        )
         {
             // Make a shallow copy so downstream enrichment cannot mutate the shared dictionary.
             if (source == null)

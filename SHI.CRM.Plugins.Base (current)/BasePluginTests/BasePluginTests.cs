@@ -1,10 +1,10 @@
 ﻿using System;
 using System.ServiceModel;
+using BasePluginTests.Common;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Moq;
 using Xunit;
-using BasePluginTests.Common;
 
 namespace BasePluginTests
 {
@@ -12,9 +12,7 @@ namespace BasePluginTests
     {
         private readonly PluginTestHarness _harness = new();
 
-        public BasePluginTests()
-        {
-        }
+        public BasePluginTests() { }
 
         [Fact]
         public void Execute_throws_when_service_provider_is_null()
@@ -27,8 +25,8 @@ namespace BasePluginTests
         [Fact]
         public void Execute_throws_and_traces_when_context_missing()
         {
-            _harness.ServiceProvider
-                .Setup(sp => sp.GetService(typeof(IPluginExecutionContext)))
+            _harness
+                .ServiceProvider.Setup(sp => sp.GetService(typeof(IPluginExecutionContext)))
                 .Returns((IPluginExecutionContext)null);
 
             var plugin = new TestableChildPlugin();
@@ -44,8 +42,8 @@ namespace BasePluginTests
         [Fact]
         public void Execute_throws_and_traces_when_service_factory_missing()
         {
-            _harness.ServiceProvider
-                .Setup(sp => sp.GetService(typeof(IOrganizationServiceFactory)))
+            _harness
+                .ServiceProvider.Setup(sp => sp.GetService(typeof(IOrganizationServiceFactory)))
                 .Returns((IOrganizationServiceFactory)null);
 
             var plugin = new TestableChildPlugin();
@@ -64,11 +62,11 @@ namespace BasePluginTests
             var userId = Guid.NewGuid();
             var initiatingUserId = Guid.NewGuid();
             _harness.SetDefaultContext(userId, initiatingUserId);
-            _harness.Factory
-                .Setup(f => f.CreateOrganizationService(userId))
+            _harness
+                .Factory.Setup(f => f.CreateOrganizationService(userId))
                 .Returns(_harness.ExecutionService.Object);
-            _harness.Factory
-                .Setup(f => f.CreateOrganizationService(initiatingUserId))
+            _harness
+                .Factory.Setup(f => f.CreateOrganizationService(initiatingUserId))
                 .Returns(_harness.PermissionCheckService.Object);
 
             SHI.CRM.Plugins.Base.Infrastructure.PluginServices capturedServices = null;
@@ -87,7 +85,10 @@ namespace BasePluginTests
             Assert.Same(_harness.Context.Object, capturedServices.Context);
             Assert.Same(_harness.Tracing.Object, capturedServices.Tracing);
             Assert.Same(_harness.ExecutionService.Object, capturedServices.ExecutionService);
-            Assert.Same(_harness.PermissionCheckService.Object, capturedServices.PermissionCheckService);
+            Assert.Same(
+                _harness.PermissionCheckService.Object,
+                capturedServices.PermissionCheckService
+            );
             Assert.NotNull(capturedCloudTracing);
             AssertCommonPropsIncludeExpectedFields(capturedCloudTracing);
             _harness.Factory.Verify(f => f.CreateOrganizationService(userId), Times.Once);
@@ -189,7 +190,8 @@ namespace BasePluginTests
             var ex = Assert.Throws<InvalidPluginExecutionException>(() =>
                 plugin.Execute(_harness.ServiceProvider.Object)
             );
-            string errMsg = "Something went wrong. Please try again. If this keeps happening, contact support.";
+            string errMsg =
+                "Something went wrong. Please try again. If this keeps happening, contact support.";
             Assert.Contains(errMsg, ex.Message);
             Assert.DoesNotContain("Reference:", ex.Message, StringComparison.OrdinalIgnoreCase);
             Assert.IsType<InvalidOperationException>(ex.InnerException);
@@ -229,8 +231,8 @@ namespace BasePluginTests
         public void Execute_reads_disable_trace_flag_from_dataverse_when_set()
         {
             // Configure the execution service to return "1" for the Dataverse env var so duplication is disabled.
-            _harness.ExecutionService
-                .Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
+            _harness
+                .ExecutionService.Setup(s => s.RetrieveMultiple(It.IsAny<QueryExpression>()))
                 .Returns<QueryBase>(query =>
                 {
                     var qe = query as QueryExpression;
@@ -258,18 +260,27 @@ namespace BasePluginTests
 
             plugin.Execute(_harness.ServiceProvider.Object);
 
-            var telemetryTracer = Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(capturedCloudTracing);
-            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService)
-                .GetField("_duplicateInnerTrace", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var telemetryTracer =
+                Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(
+                    capturedCloudTracing
+                );
+            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService).GetField(
+                "_duplicateInnerTrace",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic
+            );
             var duplicateInnerTrace = (bool)field!.GetValue(telemetryTracer)!;
             Assert.False(duplicateInnerTrace);
 
             // The execution service should have been queried for the Dataverse env var.
             _harness.ExecutionService.Verify(
-                s => s.RetrieveMultiple(It.Is<QueryExpression>(q =>
-                    q.EntityName == "environmentvariabledefinition"
-                    && (string)q.Criteria.Conditions[0].Values[0] == "shi_DisableInnerTraceDuplication"
-                )),
+                s =>
+                    s.RetrieveMultiple(
+                        It.Is<QueryExpression>(q =>
+                            q.EntityName == "environmentvariabledefinition"
+                            && (string)q.Criteria.Conditions[0].Values[0]
+                                == "shi_DisableInnerTraceDuplication"
+                        )
+                    ),
                 Times.AtLeastOnce
             );
         }
@@ -285,20 +296,31 @@ namespace BasePluginTests
 
             plugin.Execute(_harness.ServiceProvider.Object);
 
-            var telemetryTracer = Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(capturedCloudTracing);
-            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService)
-                .GetField("_duplicateInnerTrace", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var telemetryTracer =
+                Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(
+                    capturedCloudTracing
+                );
+            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService).GetField(
+                "_duplicateInnerTrace",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic
+            );
             var duplicateInnerTrace = (bool)field!.GetValue(telemetryTracer)!;
             Assert.True(duplicateInnerTrace);
         }
 
         private void AssertCommonPropsIncludeExpectedFields(ITracingService cloudTracing)
         {
-            var telemetryTracer = Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(cloudTracing);
-            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService)
-                .GetField("_commonProps", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            var telemetryTracer =
+                Assert.IsType<SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService>(cloudTracing);
+            var field = typeof(SHI.CRM.Plugins.Base.Telemetry.TelemetryTracingService).GetField(
+                "_commonProps",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic
+            );
 
-            var props = Assert.IsAssignableFrom<System.Collections.Generic.IReadOnlyDictionary<string, string>>(field?.GetValue(telemetryTracer));
+            var props = Assert.IsAssignableFrom<System.Collections.Generic.IReadOnlyDictionary<
+                string,
+                string
+            >>(field?.GetValue(telemetryTracer));
             Assert.Equal(typeof(TestableChildPlugin).FullName, props["PluginType"]);
             Assert.True(props.ContainsKey("TraceDuplicationEnabled"));
             Assert.True(props.ContainsKey("TelemetryEnabled"));

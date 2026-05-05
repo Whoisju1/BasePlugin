@@ -14,13 +14,13 @@
     2. Host environment variable `APPLICATIONINSIGHTS_CONNECTION_STRING`.
     3. Host environment variable `APPINSIGHTS_CONNECTION_STRING`.
 
-    If none of these resolve to a value, or the Application Insights SDK is unavailable, telemetry is disabled but platform tracing continues.
+    If none of these resolve to a non-empty value, or the Application Insights SDK is unavailable, telemetry is disabled but platform tracing continues. Use the connection string from the Azure Application Insights resource, such as `InstrumentationKey=<guid>;IngestionEndpoint=https://<region>.in.applicationinsights.azure.com/`.
 4) `TelemetryTracingService` wraps the platform tracer to mirror messages to Application Insights. Duplication of inner tracing defaults to **enabled** and can be disabled by setting any of:
     - Dataverse Environment Variable `shi_DisableInnerTraceDuplication` to `1`
     - Host environment variable `shi_DISABLE_INNER_TRACE_DUPLICATION=1`
     - Host environment variable `DISABLE_INNER_TRACE_DUPLICATION=1`
 
-    The Dataverse value is checked first so platform admins can flip the flag without redeploying.
+    The Dataverse value is checked first so platform admins can flip the flag without redeploying. Inner tracing is still forced on when telemetry is disabled so `cloudTracing` does not drop messages.
 5) `ExecutePluginLogic` (implemented by derived classes) receives both tracers.
 6) Exceptions:
     - `InvalidPluginExecutionException` is traced, then rethrown (user-facing business errors).
@@ -52,7 +52,7 @@ protected override void ExecutePluginLogic(
 
 ### Tracing guidance
 - Use `services.Tracing` for platform traces; use `cloudTracing` when you also want Application Insights mirroring.
-- To reduce log noise, set `DISABLE_INNER_TRACE_DUPLICATION=1` (inner tracer skipped, Application Insights telemetry still flows when enabled).
+- To reduce log noise, set `DISABLE_INNER_TRACE_DUPLICATION=1` or `shi_DisableInnerTraceDuplication=1`. The inner tracer is skipped only when Application Insights telemetry is enabled.
 - Avoid logging secrets/PII in either tracer.
 
 ### Service identity guidance
@@ -197,7 +197,9 @@ var target = services.ExecutionService.Retrieve(
 
 ### Telemetry adapter behavior
 - Resilient: errors in the Application Insights SDK are swallowed.
-- `TelemetryAdapter.GetOrCreate()` is a singleton; reuse avoids repeated reflection.
+- Blank/null connection string means telemetry is disabled.
+- `TelemetryAdapter.GetOrCreate()` reuses an enabled adapter only while the resolved connection string is unchanged; disabled adapters are retried on later executions.
+- The Application Insights client is created with a dedicated telemetry configuration instead of mutating `TelemetryConfiguration.Active`.
 - Completion trace: `BasePlugin.Execute completed` emits with `TotalDurationMs` for coarse timing.
 - Metrics emitted (when telemetry is enabled): `InputParameterCount`, `SharedVariableCount`, and `TotalDurationMs` (ms). These land in `customMetrics` and are easier to chart/alert without casting.
 
@@ -218,6 +220,8 @@ var target = services.ExecutionService.Retrieve(
 - `InputParameterCount`: Count of input parameters (no names/values logged). Spikes can flag unusually large requests.
 - `SharedVariableCount`: Count of shared variables passed along the pipeline; growth can signal coupling across steps.
 - `PluginType`: Fully qualified plugin type name. Use to filter to a specific plugin class when multiple plugins share a message/entity.
+- `TraceDuplicationEnabled`: Whether `cloudTracing` duplicates to platform trace while telemetry is enabled.
+- `TelemetryEnabled`: Whether a non-empty connection string and SDK produced an enabled Application Insights adapter.
 
 #### Sample KQL queries (Application Insights)
 
@@ -255,11 +259,11 @@ customMetrics
 ```
 
 ## Testing
-- Unit tests live in `Plugins/SHI.CRM.Plugins.Base/BasePluginTests`.
+- Unit tests live in `SHI.CRM.Plugins.Base (current)/BasePluginTests`.
 - Run from repo root:
 
 ```powershell
-dotnet test "Plugins/SHI.CRM.Plugins.Base/BasePluginTests/BasePluginTests.csproj"
+dotnet test "SHI.CRM.Plugins.Base (current)\SHI.CRM.Plugins.Base.slnx"
 ```
 
 ## Constraints and compatibility

@@ -118,7 +118,7 @@ Service choice examples:
 
 ### Tracing and telemetry
 - `services.Tracing` is the platform tracer and is always available inside the Dataverse sandbox.
-- `cloudTracing` wraps `services.Tracing` and mirrors messages to Application Insights when an Application Insights connection string is present. If Application Insights is unavailable, it quietly no-ops.
+- `cloudTracing` wraps `services.Tracing` and mirrors messages to Application Insights when a non-empty Application Insights connection string is present. If Application Insights is unavailable, `cloudTracing` still writes to platform trace so messages are not lost.
 - Common telemetry properties include correlation IDs, message name, entity info, stage/depth, mode, initiating/executing user IDs, business unit/organization IDs and name, input/shared variable counts, and `PluginType`.
 - Runtime flags for `TraceDuplicationEnabled` and `TelemetryEnabled` are attached to every telemetry event.
 
@@ -129,12 +129,14 @@ The base looks up telemetry configuration from Dataverse Environment Variables f
   1. Dataverse Environment Variable `shi_ApplicationInsightsConnectionString` (explicit value, then default value)
   2. Host env var `APPLICATIONINSIGHTS_CONNECTION_STRING`
   3. Host env var `APPINSIGHTS_CONNECTION_STRING`
-- **Disable inner trace duplication** (set any to `1` to skip the platform tracer while still emitting telemetry):
+
+  Telemetry is disabled when this resolves to null, empty, or whitespace. Use the connection string copied from the Azure Application Insights resource, for example `InstrumentationKey=<guid>;IngestionEndpoint=https://<region>.in.applicationinsights.azure.com/`.
+- **Disable inner trace duplication** (set any to `1` to skip the platform tracer only while telemetry is enabled):
   1. Dataverse Environment Variable `shi_DisableInnerTraceDuplication`
   2. Host env var `shi_DISABLE_INNER_TRACE_DUPLICATION`
   3. Host env var `DISABLE_INNER_TRACE_DUPLICATION`
 
-The Dataverse lookup uses `services.ExecutionService` (the step run-as identity). Failures to read Environment Variables are swallowed and the next fallback in the list is used. The Dataverse lookup for the connection string runs once per process; the disable-trace flag is consulted on every plug-in execution so it can be toggled without restarting the sandbox.
+The Dataverse lookup uses `services.ExecutionService` (the step run-as identity). Failures to read Environment Variables are swallowed and the next fallback in the list is used. The telemetry adapter reuses an enabled client only while the resolved connection string is unchanged, so adding or rotating the connection string can take effect without waiting for a sandbox recycle. Disabled adapters are retried on later executions.
 
 ### Deferred concern
 - `TraceWithContext` currently traces the full exception object to preserve detailed sandbox diagnostics. This is a deliberate tradeoff: it helps diagnosis, but full exception payloads can contain sensitive values. The team chose to document the concern now and revisit redaction or narrower logging later rather than changing the behavior in this refactor.
@@ -162,7 +164,7 @@ The Dataverse lookup uses `services.ExecutionService` (the step run-as identity)
 Run the suite from the repo root:
 
 ```powershell
-dotnet test "Plugins/SHI.CRM.Plugins.Base/BasePluginTests/BasePluginTests.csproj"
+dotnet test "SHI.CRM.Plugins.Base (current)\SHI.CRM.Plugins.Base.slnx"
 ```
 
 Key scenarios covered:
@@ -171,6 +173,7 @@ Key scenarios covered:
 - service reuse when both identities match
 - propagation of `PluginServices` into derived plug-in logic
 - business, Dataverse, unexpected, and async retry exception handling
+- telemetry disabled/connection-string behavior, adapter reuse, trace preservation, and deterministic singleton behavior
 
 ## Gotchas & Decisions
 - Architectural decision: [ADR 0002](../../docs/decisions/0002-expose-plugin-execution-and-permission-services.md)

@@ -27,7 +27,10 @@ namespace BasePluginTests.Telemetry
                 .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
                 .Returns(new EntityCollection(new[] { definition }));
 
-            var value = EnvironmentVariableReader.GetValue(organizationService.Object, "shi_SomeFlag");
+            var value = EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_SomeFlag"
+            );
 
             Assert.Equal("explicit-value", value);
         }
@@ -51,7 +54,10 @@ namespace BasePluginTests.Telemetry
                     }
                 );
 
-            var value = EnvironmentVariableReader.GetValue(organizationService.Object, "shi_SomeFlag");
+            var value = EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_SomeFlag"
+            );
 
             Assert.Equal("fallback-value", value);
         }
@@ -64,7 +70,10 @@ namespace BasePluginTests.Telemetry
                 .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
                 .Returns(new EntityCollection());
 
-            var value = EnvironmentVariableReader.GetValue(organizationService.Object, "shi_SomeFlag");
+            var value = EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_SomeFlag"
+            );
 
             Assert.Null(value);
         }
@@ -81,7 +90,7 @@ namespace BasePluginTests.Telemetry
         [InlineData(null)]
         [InlineData("")]
         [InlineData("   ")]
-        public void GetValue_returns_null_when_schema_name_is_blank(string? schemaName)
+        public void GetValue_returns_null_when_schema_name_is_blank(string schemaName)
         {
             var organizationService = new Mock<IOrganizationService>(MockBehavior.Strict);
 
@@ -99,7 +108,10 @@ namespace BasePluginTests.Telemetry
                 .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
                 .Throws(new InvalidOperationException("offline"));
 
-            var value = EnvironmentVariableReader.GetValue(organizationService.Object, "shi_SomeFlag");
+            var value = EnvironmentVariableReader.GetValue(
+                organizationService.Object,
+                "shi_SomeFlag"
+            );
 
             Assert.Null(value);
         }
@@ -107,7 +119,7 @@ namespace BasePluginTests.Telemetry
         [Fact]
         public void GetValue_queries_using_provided_schema_name()
         {
-            QueryExpression? captured = null;
+            QueryExpression captured = null;
             var organizationService = new Mock<IOrganizationService>();
             organizationService
                 .Setup(service => service.RetrieveMultiple(It.IsAny<QueryExpression>()))
@@ -120,7 +132,7 @@ namespace BasePluginTests.Telemetry
             );
 
             Assert.NotNull(captured);
-            Assert.Equal("environmentvariabledefinition", captured!.EntityName);
+            Assert.Equal("environmentvariabledefinition", captured.EntityName);
             var condition = Assert.Single(captured.Criteria.Conditions);
             Assert.Equal("schemaname", condition.AttributeName);
             Assert.Equal("shi_DisableInnerTraceDuplication", condition.Values[0]);

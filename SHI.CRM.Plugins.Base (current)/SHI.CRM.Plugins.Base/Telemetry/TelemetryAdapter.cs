@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Query;
 
 namespace SHI.CRM.Plugins.Base.Telemetry
 {
@@ -13,6 +12,7 @@ namespace SHI.CRM.Plugins.Base.Telemetry
     {
         private static readonly object _lock = new object();
         private static TelemetryAdapter _instance;
+        private static string _instanceConnectionString;
         private static bool _disableNoticeTraced;
 
         private readonly object _client;
@@ -46,30 +46,58 @@ namespace SHI.CRM.Plugins.Base.Telemetry
         /// </summary>
         public static TelemetryAdapter CreateFromDataverseOrEnvironment(
             IOrganizationService orgService
-        )
-        {
-            var connectionString =
-                TryGetConnectionStringFromDataverse(orgService)
-                ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
-                ?? Environment.GetEnvironmentVariable("APPINSIGHTS_CONNECTION_STRING");
-
-            return Create(connectionString);
-        }
+        ) => Create(ResolveConnectionString(orgService));
 
         /// <summary>
-        /// Returns a singleton adapter created from Dataverse + host environment configuration.
-        /// Subsequent calls reuse the instance.
+        /// Returns an adapter created from Dataverse + host environment configuration.
+        /// Enabled adapters are reused only while the resolved connection string is unchanged.
+        /// Disabled adapters are not sticky; later calls can enable telemetry after configuration is added.
         /// </summary>
         public static TelemetryAdapter GetOrCreate(IOrganizationService orgService = null)
         {
-            if (_instance != null)
+            var connectionString = ResolveConnectionString(orgService);
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                lock (_lock)
+                {
+                    if (_instance == null || _instance.IsEnabled)
+                    {
+                        _instance = Disabled();
+                        _instanceConnectionString = null;
+                    }
+
+                    return _instance;
+                }
+            }
+
+            if (
+                _instance != null
+                && _instance.IsEnabled
+                && string.Equals(
+                    _instanceConnectionString,
+                    connectionString,
+                    StringComparison.Ordinal
+                )
+            )
+            {
                 return _instance;
+            }
 
             lock (_lock)
             {
-                if (_instance == null)
+                if (
+                    _instance == null
+                    || !_instance.IsEnabled
+                    || !string.Equals(
+                        _instanceConnectionString,
+                        connectionString,
+                        StringComparison.Ordinal
+                    )
+                )
                 {
-                    _instance = CreateFromDataverseOrEnvironment(orgService);
+                    _instance = Create(connectionString);
+                    _instanceConnectionString = _instance.IsEnabled ? connectionString : null;
                 }
             }
 
@@ -83,30 +111,33 @@ namespace SHI.CRM.Plugins.Base.Telemetry
         {
             try
             {
+                if (string.IsNullOrWhiteSpace(connectionString))
+                    return Disabled();
+
                 var clientType = Type.GetType(
                     "Microsoft.ApplicationInsights.TelemetryClient, Microsoft.ApplicationInsights"
                 );
                 if (clientType == null)
-                    return new TelemetryAdapter(null, null, null, null, null);
+                    return Disabled();
 
-                object clientInstance = Activator.CreateInstance(clientType);
+                var configType = Type.GetType(
+                    "Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration, Microsoft.ApplicationInsights"
+                );
+                if (configType == null)
+                    return Disabled();
 
-                if (!string.IsNullOrWhiteSpace(connectionString))
-                {
-                    var configType = Type.GetType(
-                        "Microsoft.ApplicationInsights.Extensibility.TelemetryConfiguration, Microsoft.ApplicationInsights"
-                    );
-                    var activeProp = configType?.GetProperty(
-                        "Active",
-                        BindingFlags.Static | BindingFlags.Public
-                    );
-                    var activeConfig = activeProp?.GetValue(null);
-                    var csProp = configType?.GetProperty(
-                        "ConnectionString",
-                        BindingFlags.Public | BindingFlags.Instance
-                    );
-                    csProp?.SetValue(activeConfig, connectionString);
-                }
+                var telemetryConfiguration = CreateTelemetryConfiguration(
+                    configType,
+                    connectionString
+                );
+                if (telemetryConfiguration == null)
+                    return Disabled();
+
+                var clientConstructor = clientType.GetConstructor(new[] { configType });
+                if (clientConstructor == null)
+                    return Disabled();
+
+                object clientInstance = clientConstructor.Invoke(new[] { telemetryConfiguration });
 
                 var trackException = clientType.GetMethod(
                     "TrackException",
@@ -154,7 +185,7 @@ namespace SHI.CRM.Plugins.Base.Telemetry
             }
             catch
             {
-                return new TelemetryAdapter(null, null, null, null, null);
+                return Disabled();
             }
         }
 
@@ -315,60 +346,52 @@ namespace SHI.CRM.Plugins.Base.Telemetry
             }
         }
 
-        private static string TryGetConnectionStringFromDataverse(IOrganizationService orgService)
-        {
-            if (orgService == null)
-                return null;
+        private static TelemetryAdapter Disabled() =>
+            new TelemetryAdapter(null, null, null, null, null);
 
+        private static object CreateTelemetryConfiguration(Type configType, string connectionString)
+        {
             try
             {
-                var query = new QueryExpression("environmentvariabledefinition")
-                {
-                    ColumnSet = new ColumnSet("defaultvalue"),
-                    Criteria =
-                    {
-                        Conditions =
-                        {
-                            new ConditionExpression(
-                                "schemaname",
-                                ConditionOperator.Equal,
-                                "shi_ApplicationInsightsConnectionString"
-                            ),
-                        },
-                    },
-                };
-
-                query.LinkEntities.Add(
-                    new LinkEntity(
-                        "environmentvariabledefinition",
-                        "environmentvariablevalue",
-                        "environmentvariabledefinitionid",
-                        "environmentvariabledefinitionid",
-                        JoinOperator.LeftOuter
-                    )
-                    {
-                        Columns = new ColumnSet("value"),
-                        EntityAlias = "v",
-                    }
+                var createDefault = configType.GetMethod(
+                    "CreateDefault",
+                    BindingFlags.Static | BindingFlags.Public
                 );
 
-                var result = orgService.RetrieveMultiple(query);
-                if (result?.Entities == null || result.Entities.Count == 0)
+                var config =
+                    createDefault != null
+                        ? createDefault.Invoke(null, null)
+                        : Activator.CreateInstance(configType);
+                if (config == null)
                     return null;
 
-                var definition = result.Entities[0];
-                var explicitValue =
-                    definition.GetAttributeValue<AliasedValue>("v.value")?.Value as string;
-                if (!string.IsNullOrWhiteSpace(explicitValue))
-                    return explicitValue;
+                var connectionStringProperty = configType.GetProperty(
+                    "ConnectionString",
+                    BindingFlags.Public | BindingFlags.Instance
+                );
+                if (connectionStringProperty == null || !connectionStringProperty.CanWrite)
+                    return null;
 
-                var defaultValue = definition.GetAttributeValue<string>("defaultvalue");
-                return string.IsNullOrWhiteSpace(defaultValue) ? null : defaultValue;
+                connectionStringProperty.SetValue(config, connectionString);
+                return config;
             }
             catch
             {
                 return null;
             }
+        }
+
+        internal static string ResolveConnectionString(IOrganizationService orgService)
+        {
+            var connectionString =
+                EnvironmentVariableReader.GetValue(
+                    orgService,
+                    "shi_ApplicationInsightsConnectionString"
+                )
+                ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+                ?? Environment.GetEnvironmentVariable("APPINSIGHTS_CONNECTION_STRING");
+
+            return string.IsNullOrWhiteSpace(connectionString) ? null : connectionString;
         }
 
         private static void AddIfNotEmpty(

@@ -26,7 +26,11 @@ namespace BasePluginTests.Diagnostics
             var tracing = new Mock<ITracingService>();
             var context = new Mock<IPluginExecutionContext>();
 
-            tracing.Object.TraceWithContext(context.Object, new InvalidOperationException(), "Label");
+            tracing.Object.TraceWithContext(
+                context.Object,
+                new InvalidOperationException(),
+                "Label"
+            );
 
             tracing.Verify(
                 t =>
@@ -52,7 +56,12 @@ namespace BasePluginTests.Diagnostics
             context.Setup(c => c.Depth).Returns(2);
             context.Setup(c => c.SecondaryEntityName).Returns("contact");
 
-            tracing.Object.TraceWithContext(context.Object, new InvalidOperationException(), "Label", "My.Plugin");
+            tracing.Object.TraceWithContext(
+                context.Object,
+                new InvalidOperationException(),
+                "Label",
+                "My.Plugin"
+            );
 
             tracing.Verify(
                 t =>
@@ -84,7 +93,11 @@ namespace BasePluginTests.Diagnostics
                 .Callback(() => throw new InvalidOperationException("trace failed"));
 
             var ex = Record.Exception(() =>
-                tracing.Object.TraceWithContext(new Mock<IPluginExecutionContext>().Object, new Exception(), "Label")
+                tracing.Object.TraceWithContext(
+                    new Mock<IPluginExecutionContext>().Object,
+                    new Exception(),
+                    "Label"
+                )
             );
 
             Assert.Null(ex);
