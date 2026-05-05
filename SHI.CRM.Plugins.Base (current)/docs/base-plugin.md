@@ -209,25 +209,229 @@ var target = services.ExecutionService.Retrieve(
 - `EnvironmentVariableReader.ClearCache()` is a test seam; the test project calls it from its test-class constructors so xUnit's unordered runs do not see a previous test's cached value.
 - `BasePlugin.ResolveTelemetry(IOrganizationService)` is `internal virtual`. The default returns the singleton from `TelemetryAdapter.GetOrCreate`; tests inside the assembly (the test project shares the assembly via the projitems import) override the hook to inject a stub adapter without touching `TelemetryAdapter._instance` through reflection.
 
-#### Telemetry dimensions (what they mean and when to use)
-- `CorrelationId`: End-to-end Application Insights correlation across services. Use when stitching a path that spans portal/API → plugin → downstream services.
-- `OperationId`: Groups all plugin steps fired by the same Dataverse operation (pre/parent/post). Use when you need the full story of a single business operation.
-- `RequestId`: The Dataverse pipeline request ID for this execution. Use to align with platform logs or support tickets.
-- `MessageName`: The pipeline message (Create/Update/Delete/Associate/SetState/etc.). Filter to see only the message you care about.
-- `PrimaryEntityName` / `PrimaryEntityId`: The main entity and record for the operation. Use to see which record was touched without logging payloads.
-- `SecondaryEntityName`: The paired/target entity for two-record messages (e.g., associate/disassociate relationships, state changes).
-- `Stage`: Plugin pipeline stage number. Use to spot where a failure occurred (pre-validate, pre-operation, post-operation, async).
-- `Depth`: Recursion depth. Values >1 indicate re-entry; useful for detecting loops.
-- `Mode`: Sync vs async execution. Filter when comparing latency or failure rates between modes.
-- `InitiatingUserId`: Who initiated the request. Use for auditing and to correlate with upstream caller identity.
-- `UserId`: The user executing the plugin (may differ due to impersonation). Compare with `InitiatingUserId` to detect impersonation scenarios.
-- `BusinessUnitId`: Business unit context for RBAC checks; helps spot BU-scoped issues.
-- `OrganizationId` / `OrganizationName`: Environment identifiers; essential when multiple orgs feed the same Application Insights instance.
-- `InputParameterCount`: Count of input parameters (no names/values logged). Spikes can flag unusually large requests.
-- `SharedVariableCount`: Count of shared variables passed along the pipeline; growth can signal coupling across steps.
-- `PluginType`: Fully qualified plugin type name. Use to filter to a specific plugin class when multiple plugins share a message/entity.
-- `TraceDuplicationEnabled`: Whether `cloudTracing` duplicates to platform trace while telemetry is enabled.
-- `TelemetryEnabled`: Whether a non-empty connection string and SDK produced an enabled Application Insights adapter.
+### Debugging with telemetry: which signal solves which problem
+
+Every plug-in execution emits a structured event with the dimensions and metrics below. Each signal exists to answer a specific question that comes up during real-world debugging. This section explains **what each one is, why it's logged, the problem it solves, and how to use it to find a root cause.**
+
+#### Identity and correlation signals
+
+These are how you stitch a single user action together across many plug-in invocations and (if you have other instrumented services) across system boundaries.
+
+- **`CorrelationId`** — Application Insights' end-to-end correlation identifier.
+  - **Why it's logged:** lets you follow one user action across multiple services (web app → API → Dataverse plug-in → downstream).
+  - **Problem it solves:** "A user clicked Submit and something went wrong somewhere — but where?" Filter by this ID and you see the entire chain in timestamp order.
+  - **How to use it:** users (or your front-end) capture this ID; on a bug report, paste it into Application Insights and read the timeline.
+
+- **`OperationId`** — groups every plug-in step fired by one Dataverse operation (pre-validate, pre-operation, post-operation, async).
+  - **Why it's logged:** a single Create or Update can fire half a dozen plug-ins; this groups them.
+  - **Problem it solves:** "The record looks wrong after save — which plug-in actually changed it?" Filter by `OperationId` and you see every plug-in stage in order.
+  - **How to use it:** combine with `Stage` ordering to see which plug-in stage was the last one to run before the bad outcome.
+
+- **`RequestId`** — Dataverse's internal pipeline request ID for this execution.
+  - **Why it's logged:** lets you align Application Insights traces with Dataverse platform diagnostics, support tickets, or admin-center request logs.
+  - **Problem it solves:** "Microsoft support gave us a request ID, but our App Insights queries use Application Insights IDs. How do we find this in our logs?" Filter by `RequestId`.
+  - **How to use it:** mostly for cross-referencing with Microsoft support or platform tracing.
+
+#### Pipeline shape signals
+
+These tell you **where in the pipeline** a failure happened and **what was being done**.
+
+- **`MessageName`** — the Dataverse message (Create/Update/Delete/Associate/SetState/Retrieve/etc.).
+  - **Why it's logged:** the same plug-in class often handles different messages.
+  - **Problem it solves:** "We have errors in this plug-in, but only some of them. Are they all the same operation?" Group by `MessageName` to find out.
+  - **How to use it:** filter on the message you care about, e.g. `MessageName == 'Update'`, before slicing further.
+
+- **`PrimaryEntityName` / `PrimaryEntityId`** — the entity and record being acted on.
+  - **Why it's logged:** lets you find the trace for a specific record without logging the record's actual data.
+  - **Problem it solves:** "Customer says record 12345 isn't saving correctly — what happened during their last attempt?" Filter by `PrimaryEntityId == '<guid>'`.
+  - **How to use it:** start here when reproducing a customer-reported issue against a specific record.
+
+- **`SecondaryEntityName`** — the paired entity for two-record messages (Associate, Disassociate, certain state changes).
+  - **Why it's logged:** Associate/Disassociate involve two entities; logging only the primary loses half the context.
+  - **Problem it solves:** "We have a relationship change failing — which side of the relationship is the issue on?"
+  - **How to use it:** pair with `MessageName == 'Associate'` to investigate relationship-handling plug-ins.
+
+- **`Stage`** — pipeline stage as a number: 10 = pre-validate, 20 = pre-operation, 40 = post-operation.
+  - **Why it's logged:** identical plug-in code can register at multiple stages with very different responsibilities.
+  - **Problem it solves:** "The plug-in works in pre-operation but fails in post — why?" Filter by `Stage`.
+  - **How to use it:** use stage to narrow which plug-in registration is actually firing — pre-operation has different rules (e.g. you can mutate the Target) than post.
+
+- **`Depth`** — pipeline recursion depth. `1` is a top-level invocation; `>1` means we're inside a re-entry.
+  - **Why it's logged:** runaway recursion is a top-3 cause of plug-in incidents (a plug-in fires, makes a change, the change fires the same plug-in, and so on).
+  - **Problem it solves:** "Why is this plug-in firing 50 times for one save?" Group by `Depth` and you'll see the recursion shape.
+  - **How to use it:** any spike in events with `Depth > 1` for a plug-in that wasn't designed for re-entry is an alert-worthy signal.
+
+- **`Mode`** — `0` is synchronous, `1` is asynchronous.
+  - **Why it's logged:** the same plug-in class can be registered both sync and async with very different SLAs and failure modes.
+  - **Problem it solves:** "Async plug-in failures look different from sync ones — am I comparing apples to oranges?" Filter by `Mode` first.
+  - **How to use it:** when alerting or measuring p95 latency, partition by `Mode` so async background jobs don't drown out the synchronous user-facing path.
+
+#### Identity-of-caller signals
+
+These tell you **who** ran the plug-in and **on whose behalf**, which is essential for permission and impersonation issues.
+
+- **`InitiatingUserId`** — the user who originated the request (the human at the keyboard).
+  - **Why it's logged:** essential for audit and for diagnosing permission-sensitive behavior.
+  - **Problem it solves:** "User X says they can't perform action Y — what does our log show actually happened when they tried?"
+  - **How to use it:** filter by user ID + time window when investigating a user-reported permission denial.
+
+- **`UserId`** — the identity the plug-in actually ran under (the step's run-as identity).
+  - **Why it's logged:** plug-ins run as a registered identity, not as the initiating user. The two are usually different.
+  - **Problem it solves:** "The plug-in succeeded for the system but the user said it failed — was it impersonation, or did our run-as identity have privileges the user didn't?" Compare `UserId` to `InitiatingUserId`.
+  - **How to use it:** if these two differ and you see authorization-related errors, check whether your code used the right org service (`PermissionCheckService` vs `ExecutionService`).
+
+- **`BusinessUnitId`** — the BU context the plug-in ran in.
+  - **Why it's logged:** Dataverse RBAC is BU-scoped; a plug-in can succeed in BU A and fail in BU B with the same code.
+  - **Problem it solves:** "Why does this work for users in HQ but break for the field team?" Group failures by `BusinessUnitId`.
+  - **How to use it:** when bug reports cluster by region or team, this is the dimension to slice on.
+
+- **`OrganizationId` / `OrganizationName`** — which Dataverse org/environment the event came from.
+  - **Why it's logged:** when many environments (dev/test/UAT/prod, multi-tenant, customer orgs) feed the same Application Insights resource, you'd otherwise be unable to tell them apart.
+  - **Problem it solves:** "We see errors but I can't tell if they're from prod or our test environment." Filter by org.
+  - **How to use it:** always filter or partition by `OrganizationName` before reading totals — cross-environment numbers are nearly always misleading.
+
+#### Volume and identity-of-code signals
+
+- **`InputParameterCount`** — number of input parameters in the execution context (no names or values, just the count).
+  - **Why it's logged:** volume changes are a leading indicator of misuse (suddenly twice as many parameters as last week) without leaking payload data.
+  - **Problem it solves:** "A request started failing — was the request shape different from the ones that succeed?"
+  - **How to use it:** chart the metric over time; spikes correlate with caller behavior changes upstream.
+
+- **`SharedVariableCount`** — number of shared variables in flight.
+  - **Why it's logged:** unbounded growth in shared variables suggests pipeline coupling that will scale poorly.
+  - **Problem it solves:** "Plug-ins are slowing down over time — where's the coupling?"
+  - **How to use it:** chart over time; if it climbs alongside latency, you have a cross-step coupling problem.
+
+- **`PluginType`** — the fully qualified plug-in class name.
+  - **Why it's logged:** multiple plug-ins are often registered against the same message/entity; this is how you tell them apart.
+  - **Problem it solves:** "A specific plug-in is misbehaving but I can't isolate it from the others on the same Update message."
+  - **How to use it:** filter by `PluginType` when investigating a known plug-in's behavior, or group by it to find which plug-in is the noisiest.
+
+#### Runtime configuration signals
+
+- **`TraceDuplicationEnabled`** — was platform tracing being duplicated to telemetry at the time of the event?
+  - **Why it's logged:** to distinguish "we have no platform trace because telemetry is on and duplication is off" from "we have no platform trace because something is broken."
+  - **Problem it solves:** "I'm not seeing the platform trace I expected for this execution — is that by design?" Check this flag.
+  - **How to use it:** check this dimension before assuming a missing platform trace is a defect.
+
+- **`TelemetryEnabled`** — was Application Insights enabled at the time of the event?
+  - **Why it's logged:** a sandbox can run with telemetry disabled (no connection string, SDK missing). Knowing the state retroactively matters when you investigate gaps.
+  - **Problem it solves:** "Why are we suddenly missing telemetry from environment X?" If `TelemetryEnabled == False` is appearing where it shouldn't, your connection string or SDK is gone.
+  - **How to use it:** filter to `TelemetryEnabled == False` to find executions where Application Insights silently turned off.
+
+#### Custom metrics
+
+These land in `customMetrics` rather than `customDimensions` so they chart cleanly without parsing.
+
+- **`TotalDurationMs`** — wall-clock duration of `BasePlugin.Execute`.
+  - **Why it's logged:** the single most useful operational metric — answers "is the plug-in fast?"
+  - **Problem it solves:** "Users say things feel slow." Chart p50/p95/p99 over time; sudden percentile shifts mean something changed.
+  - **How to use it:** alert on p95 regressions per `PluginType`. This is what you'd page someone on.
+
+- **`InputParameterCount`** / **`SharedVariableCount`** — counts at execution time, also emitted as metrics.
+  - **Why it's logged as a metric:** so you can graph trends without writing KQL aggregation.
+  - **Problem it solves:** see the dimension entries above.
+
+### Debugging recipes
+
+Concrete starting points. Each recipe matches a real-world investigation and shows the minimum viable KQL.
+
+#### Recipe 1 — A user reported an error at a specific time
+
+You usually have: a user, a time range, maybe a record ID. You want: every plug-in trace for that interaction.
+
+```kusto
+traces
+| where timestamp between (datetime(2026-05-04 13:55) .. datetime(2026-05-04 14:05))
+| where tostring(customDimensions.InitiatingUserId) == '{user-guid}'
+| project timestamp, message, customDimensions.MessageName, customDimensions.PluginType, customDimensions.Stage, customDimensions.PrimaryEntityId
+| order by timestamp asc
+```
+
+If you have a primary entity ID, drop the user filter and use `PrimaryEntityId` instead — usually a tighter match.
+
+#### Recipe 2 — A plug-in is sometimes slow
+
+```kusto
+customMetrics
+| where name == 'TotalDurationMs'
+| where tostring(customDimensions.PluginType) == '{your.plugin.fully.qualified.name}'
+| summarize p50 = percentile(value, 50), p95 = percentile(value, 95), p99 = percentile(value, 99), count()
+    by bin(timestamp, 15m), tostring(customDimensions.Mode)
+| order by timestamp asc
+```
+
+Comparing `Mode` partitions tells you whether the slowness is in the synchronous user path or the async background path.
+
+#### Recipe 3 — Suspect runaway recursion
+
+```kusto
+traces
+| where timestamp > ago(1h)
+| where todouble(customDimensions.Depth) > 1
+| summarize executions = count() by tostring(customDimensions.PluginType), tostring(customDimensions.OperationId)
+| where executions > 5
+| order by executions desc
+```
+
+Any `OperationId` with more than a handful of executions in the same plug-in usually means re-entry that wasn't intended.
+
+#### Recipe 4 — Failure rate by environment
+
+```kusto
+traces
+| where timestamp > ago(24h)
+| where severityLevel >= 3
+| summarize failures = count() by tostring(customDimensions.OrganizationName), tostring(customDimensions.PluginType)
+| order by failures desc
+```
+
+Always filter or pivot by `OrganizationName` before you read totals — multi-org shared resources will mislead you otherwise.
+
+#### Recipe 5 — Permission-sensitive bug suspected
+
+```kusto
+traces
+| where customDimensions.PrimaryEntityId == '{record-guid}'
+| project timestamp, message, customDimensions.UserId, customDimensions.InitiatingUserId, customDimensions.BusinessUnitId, customDimensions.PluginType
+| order by timestamp asc
+```
+
+If `UserId != InitiatingUserId` and the trace shows an authorization-shaped failure, suspect that the plug-in chose the wrong org service identity for the call (`ExecutionService` instead of `PermissionCheckService`).
+
+#### Recipe 6 — Find which stage broke a record
+
+```kusto
+traces
+| where customDimensions.OperationId == '{op-guid}'
+| project timestamp, customDimensions.PluginType, customDimensions.Stage, message
+| order by timestamp asc
+```
+
+Read the timeline top to bottom: the last successful plug-in before the failure, plus the failed one, is your suspect window.
+
+### Quick reference — telemetry dimensions
+
+For a one-line lookup of every dimension's purpose:
+
+- `CorrelationId`: End-to-end Application Insights correlation across services.
+- `OperationId`: Groups all plugin steps fired by the same Dataverse operation.
+- `RequestId`: The Dataverse pipeline request ID for this execution.
+- `MessageName`: The pipeline message (Create/Update/Delete/Associate/SetState/etc.).
+- `PrimaryEntityName` / `PrimaryEntityId`: The main entity and record.
+- `SecondaryEntityName`: The paired/target entity for two-record messages.
+- `Stage`: Plugin pipeline stage number (10/20/40).
+- `Depth`: Recursion depth. Values >1 indicate re-entry.
+- `Mode`: 0 = sync, 1 = async.
+- `InitiatingUserId`: Who initiated the request.
+- `UserId`: The identity the plugin executed under.
+- `BusinessUnitId`: Business unit context for RBAC.
+- `OrganizationId` / `OrganizationName`: Dataverse environment identifiers.
+- `InputParameterCount`: Count of input parameters (no values logged).
+- `SharedVariableCount`: Count of shared variables in flight.
+- `PluginType`: Fully qualified plugin type name.
+- `TraceDuplicationEnabled`: Whether platform tracing was duplicated at execution time.
+- `TelemetryEnabled`: Whether Application Insights was enabled at execution time.
 
 #### Sample KQL queries (Application Insights)
 
